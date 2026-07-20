@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Offerte Vergelijker – Streamlit web app
+Offerte Vergelijker – Streamlit web app to compare
 Run locally:  streamlit run sloopwerk/offerte_vergelijker_web.py
 Host on:      https://streamlit.io/cloud  (free, connect GitHub repo)
 """
@@ -45,14 +45,18 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+  /* Pull the entire main content area up */
+  [data-testid="stAppViewBlockContainer"] {
+      padding-top: 0.5rem !important;
+  }
   .jumbo-hdr {
       background: linear-gradient(135deg, #FDC400 0%, #e8ac00 100%);
-      padding: 16px 28px; border-radius: 12px; margin-bottom: 20px;
+      padding: 12px 24px; border-radius: 10px; margin-bottom: 12px;
       display: flex; align-items: center; gap: 18px;
       box-shadow: 0 3px 10px rgba(0,0,0,.15);
   }
-  .jumbo-hdr h1 { margin: 0; font-size: 28px; font-weight: 800; color: #1a1a1a; }
-  .jumbo-hdr p  { margin: 4px 0 0; font-size: 13px; color: #444; }
+  .jumbo-hdr h1 { margin: 0; font-size: 26px; font-weight: 800; color: #1a1a1a; }
+  .jumbo-hdr p  { margin: 3px 0 0; font-size: 12px; color: #444; }
   [data-testid="stSidebar"] { background: #f5f5f5; }
   [data-testid="stMetricValue"] { font-size: 28px !important; }
   .legend-row { display:flex; gap:18px; margin: 6px 0 14px; font-size:13px; }
@@ -202,6 +206,8 @@ def parse_pdf(path) -> List[PdfItem]:
                         flush()
                         art_nr = m.group(1)
                         lines = [m.group(2)]
+                        if _ITEM_END.search(lines[0]):  # price on same line as art.nr.
+                            flush()
                     continue
                 if art_nr:
                     lines.append(line)
@@ -337,13 +343,6 @@ def build_matches(
 
 # ─── Results → DataFrame ───────────────────────────────────────────────────────
 
-_STATUS_COLOR = {
-    "ok":         "#C6EFCE",
-    "qty_diff":   "#FFCC00",
-    "price_diff": "#FFF2CC",
-    "unmatched":  "#FFC7CE",
-}
-
 
 def results_to_df(results: List[MatchResult]) -> pd.DataFrame:
     seen:  Dict[str, List[MatchResult]] = {}
@@ -371,35 +370,40 @@ def results_to_df(results: List[MatchResult]) -> pd.DataFrame:
             if s and s not in secs:
                 secs.append(s)
 
-        ib_qty     = first.ib_qty
-        qty_diff   = round(total_qty - ib_qty, 4) if ib_qty is not None else None
-        price_diff = first.price_diff
-        pct_diff   = (
-            f"{price_diff / ni.netto_price * 100:+.1f}%"
-            if price_diff is not None and ni and ni.netto_price else ""
-        )
+        ib_qty   = first.ib_qty
+        qty_diff = round(total_qty - ib_qty, 4) if ib_qty is not None else None
 
-        has_qty   = qty_diff   is not None and qty_diff   != 0
-        has_price = price_diff is not None and abs(price_diff) > 0.01
+        # Price diff only meaningful when art.nr. matched exactly in both lists
+        if first.pdf_match_method == "exact_artnr" and first.price_diff is not None:
+            price_diff = first.price_diff
+            price_arrow = (
+                f"↑ € {price_diff:,.2f}" if price_diff > 0.01
+                else f"↓ € {abs(price_diff):,.2f}" if price_diff < -0.01
+                else ""
+            )
+        else:
+            price_diff  = None
+            price_arrow = ""
+
+        has_qty = qty_diff is not None and qty_diff != 0
         if   first.pdf_match_method == "unmatched": status = "unmatched"
         elif has_qty:                               status = "qty_diff"
-        elif has_price:                             status = "price_diff"
         else:                                       status = "ok"
 
         rows.append({
             "_status":          status,
+            "Methode":          first.pdf_match_method,   # kept for filters/metrics, hidden in table
             "Art.nr.":          pi.art_nr,
             "Manual nr.":       ni.manual_nr        if ni else "",
             "Omschrijving":     pi.description,
             "Sectie":           " / ".join(secs),
             "PDF Aantal":       total_qty,
-            "IB Aantal":        ib_qty              if ib_qty      is not None else None,
-            "Aantal verschil":  qty_diff            if qty_diff    is not None else None,
             "PDF Prijs p.e.":   pi.unit_price,
-            "NETTO Prijs p.e.": ni.netto_price      if ni          else None,
-            "Prijs verschil €": price_diff          if price_diff  is not None else None,
-            "Prijs verschil %": pct_diff,
-            "Methode":          first.pdf_match_method,
+            "PDF Totaal":       round(sum(mr.pdf_item.total for mr in mrs), 2),
+            "IB Aantal":        ib_qty              if ib_qty  is not None else None,
+            "Aantal verschil":  qty_diff            if qty_diff is not None else None,
+            "NETTO Prijs p.e.": ni.netto_price      if ni else None,
+            "Prijs verschil":   price_arrow,
             "Match %":          f"{first.confidence:.0%}" if first.confidence else "",
             "Pagina":           pi.page,
         })
@@ -407,31 +411,72 @@ def results_to_df(results: List[MatchResult]) -> pd.DataFrame:
 
 
 def _style(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
-    """Apply row background colors from _status column, then hide it."""
-    status = df["_status"].reset_index(drop=True)
-    display = df.drop(columns=["_status"])
+    """Cell-level highlights only: orange on Aantal verschil, red on Art.nr. for unmatched."""
+    status  = df["_status"].reset_index(drop=True)
+    display = df.drop(columns=["_status", "Methode"])
 
-    def row_bg(row):
-        color = _STATUS_COLOR.get(status.iloc[row.name], "")
-        return [f"background-color:{color}"] * len(row)
+    def qty_cell(col):
+        return [
+            "background-color:#FFCC00" if status.iloc[i] == "qty_diff" else ""
+            for i in range(len(col))
+        ]
 
-    money = lambda x: f"€ {x:,.2f}"   if isinstance(x, (int, float)) else ""
-    delta = lambda x: f"{x:+,.2f}"    if isinstance(x, (int, float)) else ""
-    num   = lambda x: f"{x:g}"        if isinstance(x, (int, float)) else ""
-    sgn   = lambda x: f"{x:+g}"       if isinstance(x, (int, float)) else ""
+    def unmatched_cell(col):
+        return [
+            "background-color:#FFC7CE; font-weight:600" if status.iloc[i] == "unmatched" else ""
+            for i in range(len(col))
+        ]
+
+    money = lambda x: f"€ {x:,.2f}" if isinstance(x, (int, float)) else ""
+    num   = lambda x: f"{x:g}"      if isinstance(x, (int, float)) else ""
+    sgn   = lambda x: f"{x:+g}"     if isinstance(x, (int, float)) else ""
 
     return (
         display.style
-        .apply(row_bg, axis=1)
+        .apply(qty_cell,       subset=["Aantal verschil"])
+        .apply(unmatched_cell, subset=["Art.nr."])
         .format({
             "PDF Prijs p.e.":   money,
+            "PDF Totaal":       money,
             "NETTO Prijs p.e.": money,
-            "Prijs verschil €": delta,
             "PDF Aantal":       num,
             "IB Aantal":        num,
             "Aantal verschil":  sgn,
         }, na_rep="")
     )
+
+
+# ─── Budget Summary Rows ──────────────────────────────────────────────────────
+
+def read_budget_summary_rows(src, row_start: int, row_end: int) -> List[dict]:
+    """Read rows row_start..row_end (1-based) from Budget sheet, keep rows where aantal >= 1."""
+    df = pd.read_excel(src, sheet_name="Budget", header=None, engine="openpyxl")
+    rows = []
+    for rn in range(row_start, row_end + 1):
+        idx = rn - 1
+        if idx >= len(df):
+            break
+        row = df.iloc[idx]
+        def cell(i):
+            return str(row.iloc[i]).strip() if i < len(row) and pd.notna(row.iloc[i]) else ""
+        try:    aantal = float(row.iloc[10])
+        except: aantal = 0.0
+        if aantal < 1:
+            continue
+        try:    prijs = float(row.iloc[11])
+        except: continue
+        if not pd.notna(prijs) or prijs <= 0:
+            continue
+        rows.append({
+            "rij":         rn,
+            "nummer":      cell(6),
+            "artikelnaam": cell(7),
+            "eenheid":     cell(9),
+            "aantal":      aantal,
+            "prijs":       prijs,
+            "totaal":      round(aantal * prijs, 2),
+        })
+    return rows
 
 
 # ─── Excel Export ──────────────────────────────────────────────────────────────
@@ -441,8 +486,7 @@ def export_to_bytes(df: pd.DataFrame) -> bytes:
         "header":   PatternFill("solid", fgColor="4472C4"),
         "ok":       PatternFill("solid", fgColor="C6EFCE"),
         "qty_diff": PatternFill("solid", fgColor="FFCC00"),
-        "price_diff": PatternFill("solid", fgColor="FFF2CC"),
-        "unmatched":  PatternFill("solid", fgColor="FFC7CE"),
+        "unmatched":PatternFill("solid", fgColor="FFC7CE"),
     }
     FT_HDR = Font(bold=True, color="FFFFFF")
     COL_W  = {"Omschrijving": 55, "Sectie": 22, "Manual nr.": 14,
@@ -452,7 +496,7 @@ def export_to_bytes(df: pd.DataFrame) -> bytes:
     ws = wb.active
     ws.title = "Vergelijking"
 
-    cols = [c for c in df.columns if c != "_status"]
+    cols = [c for c in df.columns if c not in ("_status", "Methode")]
     for ci, h in enumerate(cols, 1):
         c = ws.cell(row=1, column=ci, value=h)
         c.fill = F["header"]
@@ -506,15 +550,18 @@ def main():
         <div class="legend-row" style="flex-direction:column;gap:6px">
           <span><span class="legend-chip" style="background:#C6EFCE">OK</span> Exact / manual match</span>
           <span><span class="legend-chip" style="background:#FFCC00">⚠</span> Aantal verschil</span>
-          <span><span class="legend-chip" style="background:#FFF2CC">€</span> Prijs verschil</span>
           <span><span class="legend-chip" style="background:#FFC7CE">✗</span> Niet gematch</span>
+          <span>↑ / ↓ Prijs verschil (alleen bij exact art.nr. match)</span>
         </div>
         """, unsafe_allow_html=True)
 
     # ── Session state ──────────────────────────────────────────────────────────
     if "df" not in st.session_state:
-        st.session_state.df      = None
-        st.session_state.results = []
+        st.session_state.df             = None
+        st.session_state.results        = []
+        st.session_state.budget_summary = []
+        st.session_state.raw_pdf_total  = 0.0
+        st.session_state.raw_pdf_count  = 0
 
     # ── Run ────────────────────────────────────────────────────────────────────
     if run:
@@ -525,7 +572,7 @@ def main():
 
     # ── Display ────────────────────────────────────────────────────────────────
     if st.session_state.df is not None:
-        _show_results(st.session_state.df)
+        _show_results(st.session_state.df, st.session_state.budget_summary)
     else:
         st.info("Upload bestanden via de zijbalk en klik op **Analyseren** om te beginnen.")
 
@@ -546,30 +593,35 @@ def _run_analysis(pdf_file, netto_file, budget_file):
 
     bar.progress(55, f"NETTO: {len(netto_items)} items. IB Budget lezen…")
     ib_items: List[IBItem] = []
+    budget_summary: List[dict] = []
     if budget_file:
-        ib_items = read_ib_items(io.BytesIO(budget_file.read()))
+        budget_bytes = budget_file.read()
+        ib_items       = read_ib_items(io.BytesIO(budget_bytes))
+        budget_summary = read_budget_summary_rows(io.BytesIO(budget_bytes), 1986, 2763)
 
     bar.progress(75, f"Matchen ({len(pdf_items)} PDF × {len(netto_items)} NETTO)…")
     results = build_matches(pdf_items, netto_items, ib_items)
     df = results_to_df(results)
 
-    st.session_state.df      = df
-    st.session_state.results = results
+    st.session_state.df             = df
+    st.session_state.results        = results
+    st.session_state.budget_summary = budget_summary
+    st.session_state.raw_pdf_total  = sum(item.total for item in pdf_items)
+    st.session_state.raw_pdf_count  = len(pdf_items)
     bar.progress(100, "Klaar!")
     bar.empty()
     st.rerun()
 
 
-def _show_results(df: pd.DataFrame):
+def _show_results(df: pd.DataFrame, budget_summary: List[dict] = None):
     # ── Metrics ────────────────────────────────────────────────────────────────
     total     = len(df)
     exact     = int((df["Methode"] == "exact_artnr").sum())
     manual    = int((df["Methode"] == "manual_code").sum())
     fuzzy     = int((df["Methode"] == "fuzzy").sum())
     unmatched = int((df["Methode"] == "unmatched").sum())
-    qty_afw   = int((df["_status"] == "qty_diff").sum())
-    prc_col   = pd.to_numeric(df["Prijs verschil €"], errors="coerce")
-    prc_afw   = int((prc_col.notna() & (prc_col.abs() > 0.01)).sum())
+    qty_afw = int((df["_status"] == "qty_diff").sum())
+    prc_afw = int((df["Prijs verschil"] != "").sum())
 
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     c1.metric("Unieke art.nr.", total)
@@ -581,7 +633,7 @@ def _show_results(df: pd.DataFrame):
     c7.metric("Prijs ≠",       prc_afw,   help="Prijs verschil PDF vs NETTO")
 
     # ── Tabs ───────────────────────────────────────────────────────────────────
-    tab_all, tab_rev, tab_exp = st.tabs(["📋 Alle resultaten", "⚠️ Te controleren", "💾 Export"])
+    tab_all, tab_rev, tab_sam, tab_exp = st.tabs(["📋 Alle resultaten", "⚠️ Te controleren", "📊 Samenvatting", "💾 Export"])
 
     with tab_all:
         # Filters
@@ -616,6 +668,76 @@ def _show_results(df: pd.DataFrame):
         else:
             st.caption(f"{len(rdf)} items vereisen handmatige controle")
             st.dataframe(_style(rdf), use_container_width=True, height=500)
+
+    with tab_sam:
+        pdf_total      = float(pd.to_numeric(df["PDF Totaal"], errors="coerce").sum())
+        raw_pdf_total  = st.session_state.raw_pdf_total
+        raw_pdf_count  = st.session_state.raw_pdf_count
+
+        if not budget_summary:
+            st.info("Upload een Budget (IB) bestand om de budgetrijen te tonen.")
+            budget_total = 0.0
+        else:
+            budget_total = sum(r["totaal"] for r in budget_summary)
+
+        diff      = pdf_total - budget_total
+        diff_pct  = diff / budget_total * 100 if budget_total else 0
+
+        # ── Top KPIs ──────────────────────────────────────────────────────────
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Totaal PDF offerte",  f"€ {pdf_total:,.2f}")
+        k2.metric("Totaal Budget (IB)",  f"€ {budget_total:,.2f}")
+        diff_label = f"{'▲' if diff > 0 else '▼'} € {abs(diff):,.2f}  ({diff_pct:+.1f}%)"
+        k3.metric("Verschil", diff_label, delta_color="inverse" if diff > 0 else "normal")
+
+        # ── Parser diagnostic ─────────────────────────────────────────────────
+        with st.expander("🔍 Parser diagnose (klik om te openen)"):
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Regels geparseerd uit PDF", raw_pdf_count)
+            d2.metric("Raw PDF totaal (voor groepering)", f"€ {raw_pdf_total:,.2f}")
+            d3.metric("Na groepering op art.nr.", f"€ {pdf_total:,.2f}")
+            if abs(raw_pdf_total - pdf_total) > 0.01:
+                st.warning(f"Verschil door groepering: € {raw_pdf_total - pdf_total:,.2f} — mogelijk duplicaat art.nr. met verschillende prijzen.")
+            missing = 161599 - raw_pdf_total
+            if abs(missing) > 0.01:
+                st.error(f"Ontbrekend t.o.v. verwacht totaal (€ 161.599): € {missing:,.2f} — waarschijnlijk regels die de parser mist.")
+
+        st.divider()
+
+        # ── Budget rows breakdown ──────────────────────────────────────────────
+        if budget_summary:
+            st.subheader("Budget rijen 1986 – 2763 (IB)")
+            bdf = pd.DataFrame(budget_summary).rename(columns={
+                "rij": "Rij", "nummer": "Nummer", "artikelnaam": "Artikelnaam",
+                "eenheid": "Eenheid", "aantal": "Aantal",
+                "prijs": "Prijs p.e.", "totaal": "Totaal",
+            })
+            st.caption(f"{len(bdf)} rijen met aantal ≥ 1  |  totaal: € {budget_total:,.2f}")
+            st.dataframe(
+                bdf.style.format({
+                    "Prijs p.e.": lambda x: f"€ {x:,.2f}",
+                    "Totaal":     lambda x: f"€ {x:,.2f}",
+                    "Aantal":     lambda x: f"{x:g}",
+                }, na_rep=""),
+                use_container_width=True,
+                hide_index=True,
+                height=350,
+            )
+
+        st.divider()
+
+        # ── PDF totaal per sectie ──────────────────────────────────────────────
+        st.subheader("PDF totaal per sectie")
+        sec_df = (
+            df.assign(**{"PDF Totaal num": pd.to_numeric(df["PDF Totaal"], errors="coerce")})
+            .groupby("Sectie", dropna=False)["PDF Totaal num"]
+            .sum()
+            .reset_index()
+            .rename(columns={"Sectie": "Sectie", "PDF Totaal num": "Totaal"})
+            .sort_values("Totaal", ascending=False)
+        )
+        sec_df["Totaal"] = sec_df["Totaal"].apply(lambda x: f"€ {x:,.2f}")
+        st.dataframe(sec_df, use_container_width=True, hide_index=True)
 
     with tab_exp:
         st.subheader("Resultaten downloaden")
