@@ -42,6 +42,12 @@ def inject_base_style():
       [data-testid="stMetricValue"] { font-size: 28px !important; }
       .legend-row { display:flex; gap:18px; margin: 6px 0 14px; font-size:13px; }
       .legend-chip { padding: 3px 12px; border-radius: 5px; font-weight:600; }
+
+      /* Push modal dialogs (st.dialog) down toward the middle of the screen */
+      div[data-testid="stDialog"] {
+          align-items: flex-start !important;
+          padding-top: 22vh !important;
+      }
     </style>
     """, unsafe_allow_html=True)
 
