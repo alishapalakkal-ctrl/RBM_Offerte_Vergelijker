@@ -11,13 +11,42 @@ from common import configure_page, inject_base_style, jumbo_header, back_to_over
 configure_page("Offerte Vergelijker – Koeling", icon="🧊")
 inject_base_style()
 
+if "koeling_leverancier" not in st.session_state:
+    st.session_state.koeling_leverancier = None
+
+
+@st.dialog("Kies leverancier")
+def _choose_leverancier():
+    st.write("Voor welke leverancier wil je offertes vergelijken?")
+    c1, c2 = st.columns(2)
+    if c1.button("Carrier", use_container_width=True):
+        st.session_state.koeling_leverancier = "Carrier"
+        st.rerun()
+    if c2.button("Kaplanlaar", use_container_width=True):
+        st.session_state.koeling_leverancier = "Kaplanlaar"
+        st.rerun()
+
+
 back_to_overview()
-jumbo_header("🧊", "Offerte Vergelijker", "Koeling — vergelijk PDF offerte met NETTO prijslijst en IB Budget")
+
+if st.session_state.koeling_leverancier is None:
+    jumbo_header("🧊", "Offerte Vergelijker", "Koeling — kies een leverancier om te starten")
+    _choose_leverancier()
+    st.stop()
+
+leverancier = st.session_state.koeling_leverancier
+jumbo_header("🧊", "Offerte Vergelijker", f"Koeling — {leverancier}")
+
+_, wc = st.columns([5, 1])
+with wc:
+    if st.button("🔁 Wissel leverancier", use_container_width=True):
+        st.session_state.koeling_leverancier = None
+        st.rerun()
 
 st.info(
-    "Deze sectie is nog in opbouw. Zodra er voorbeeldbestanden (PDF offerte / "
-    "NETTO prijslijst / IB Budget) van de leverancier Koeling beschikbaar zijn, "
-    "wordt hier dezelfde vergelijkingslogica als bij Van Keulen toegevoegd."
+    f"Deze sectie ({leverancier}) is nog in opbouw. Zodra er voorbeeldbestanden "
+    "(PDF offerte / NETTO prijslijst / IB Budget) beschikbaar zijn, wordt hier "
+    "dezelfde vergelijkingslogica als bij Van Keulen toegevoegd."
 )
 
 with st.sidebar:
