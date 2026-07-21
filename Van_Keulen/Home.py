@@ -6,7 +6,7 @@ Run locally:  streamlit run Van_Keulen/Home.py
 
 import streamlit as st
 
-from common import configure_page, inject_base_style, jumbo_header
+from common import configure_page, inject_base_style, jumbo_header, VAN_KEULEN_ICON
 
 configure_page("Offerte Vergelijker", icon="📊")
 inject_base_style()
@@ -18,7 +18,8 @@ col1, col2 = st.columns(2)
 
 with col1:
     with st.container(border=True):
-        st.markdown("### 🟡 Van Keulen")
+        st.image(str(VAN_KEULEN_ICON), width=120)
+        st.markdown("### Van Keulen")
         st.caption("Vergelijk PDF offerte met NETTO prijslijst en IB Budget")
         st.page_link("pages/1_🟡_Van_Keulen.py", label="Openen", icon="➡️")
 

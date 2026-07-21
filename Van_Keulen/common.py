@@ -5,16 +5,22 @@ from pathlib import Path
 
 import streamlit as st
 
-_LOGO_PATH = Path(__file__).parent / "assets" / "jumbo_logo.png"
+ASSETS_DIR = Path(__file__).parent / "assets"
+LOGO_PATH = ASSETS_DIR / "jumbo_logo.png"
+VAN_KEULEN_ICON = ASSETS_DIR / "vankeulen_icon.png"
 
 
-def _logo_data_uri() -> str:
-    data = base64.b64encode(_LOGO_PATH.read_bytes()).decode()
+def _data_uri(path: Path) -> str:
+    data = base64.b64encode(path.read_bytes()).decode()
     return f"data:image/png;base64,{data}"
 
 
-def configure_page(title: str, icon: str = "📊"):
-    st.set_page_config(page_title=title, page_icon=icon, layout="wide")
+def _is_image(icon) -> bool:
+    return isinstance(icon, Path) or (isinstance(icon, str) and icon.lower().endswith((".png", ".jpg", ".jpeg")))
+
+
+def configure_page(title: str, icon="📊"):
+    st.set_page_config(page_title=title, page_icon=str(icon) if _is_image(icon) else icon, layout="wide")
 
 
 def inject_base_style():
@@ -40,12 +46,16 @@ def inject_base_style():
     """, unsafe_allow_html=True)
 
 
-def jumbo_header(icon: str, title: str, subtitle: str):
+def jumbo_header(icon, title: str, subtitle: str):
+    if _is_image(icon):
+        icon_html = f'<img src="{_data_uri(Path(icon))}" style="height:30px;vertical-align:middle;border-radius:3px" />'
+    else:
+        icon_html = icon
     st.markdown(f"""
     <div class="jumbo-hdr">
-        <img src="{_logo_data_uri()}" style="height:48px;border-radius:4px" />
+        <img src="{_data_uri(LOGO_PATH)}" style="height:48px;border-radius:4px" />
         <div>
-            <h1>{icon} {title}</h1>
+            <h1>{icon_html} {title}</h1>
             <p>{subtitle}</p>
         </div>
     </div>

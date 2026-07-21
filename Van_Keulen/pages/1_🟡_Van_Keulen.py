@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
-from common import configure_page, inject_base_style, jumbo_header, back_to_overview
+from common import configure_page, inject_base_style, jumbo_header, back_to_overview, VAN_KEULEN_ICON
 
 # ── Optional deps ──────────────────────────────────────────────────────────────
 try:
@@ -38,7 +38,7 @@ except ImportError:
     HAS_RAPIDFUZZ = False
 
 # ── Page config ────────────────────────────────────────────────────────────────
-configure_page("Offerte Vergelijker – Van Keulen", icon="🟡")
+configure_page("Offerte Vergelijker – Van Keulen", icon=VAN_KEULEN_ICON)
 inject_base_style()
 
 
@@ -499,7 +499,7 @@ def export_to_bytes(df: pd.DataFrame) -> bytes:
 
 def main():
     back_to_overview()
-    jumbo_header("🟡", "Offerte Vergelijker", "Van Keulen — vergelijk PDF offerte met NETTO prijslijst en IB Budget")
+    jumbo_header(VAN_KEULEN_ICON, "Offerte Vergelijker", "Van Keulen — vergelijk PDF offerte met NETTO prijslijst en IB Budget")
 
     # ── Sidebar ────────────────────────────────────────────────────────────────
     with st.sidebar:
