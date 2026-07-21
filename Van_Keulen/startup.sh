@@ -1,5 +1,5 @@
 #!/bin/bash
-python -m streamlit run offerte_vergelijker_web.py \
+python -m streamlit run Home.py \
     --server.port 8000 \
     --server.address 0.0.0.0 \
     --server.enableCORS false \

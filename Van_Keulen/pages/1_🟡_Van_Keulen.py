@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Offerte Vergelijker – Streamlit web app to compare
-Run locally:  streamlit run sloopwerk/offerte_vergelijker_web.py
-Host on:      https://streamlit.io/cloud  (free, connect GitHub repo)
+Offerte Vergelijker – Van Keulen section.
+Run via the app entrypoint:  streamlit run Van_Keulen/Home.py
 """
 
 import io
@@ -14,6 +13,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
+
+from common import configure_page, inject_base_style, jumbo_header, back_to_overview
 
 # ── Optional deps ──────────────────────────────────────────────────────────────
 try:
@@ -37,32 +38,8 @@ except ImportError:
     HAS_RAPIDFUZZ = False
 
 # ── Page config ────────────────────────────────────────────────────────────────
-st.set_page_config(
-    page_title="Offerte Vergelijker – Van Keulen",
-    page_icon="🟡",
-    layout="wide",
-)
-
-st.markdown("""
-<style>
-  /* Pull the entire main content area up */
-  [data-testid="stAppViewBlockContainer"] {
-      padding-top: 0.5rem !important;
-  }
-  .jumbo-hdr {
-      background: linear-gradient(135deg, #FDC400 0%, #e8ac00 100%);
-      padding: 12px 24px; border-radius: 10px; margin-bottom: 12px;
-      display: flex; align-items: center; gap: 18px;
-      box-shadow: 0 3px 10px rgba(0,0,0,.15);
-  }
-  .jumbo-hdr h1 { margin: 0; font-size: 26px; font-weight: 800; color: #1a1a1a; }
-  .jumbo-hdr p  { margin: 3px 0 0; font-size: 12px; color: #444; }
-  [data-testid="stSidebar"] { background: #f5f5f5; }
-  [data-testid="stMetricValue"] { font-size: 28px !important; }
-  .legend-row { display:flex; gap:18px; margin: 6px 0 14px; font-size:13px; }
-  .legend-chip { padding: 3px 12px; border-radius: 5px; font-weight:600; }
-</style>
-""", unsafe_allow_html=True)
+configure_page("Offerte Vergelijker – Van Keulen", icon="🟡")
+inject_base_style()
 
 
 # ─── Data classes ──────────────────────────────────────────────────────────────
@@ -521,15 +498,8 @@ def export_to_bytes(df: pd.DataFrame) -> bytes:
 # ─── Streamlit App ─────────────────────────────────────────────────────────────
 
 def main():
-    st.markdown("""
-    <div class="jumbo-hdr">
-        <div style="font-size:42px;line-height:1">🟡</div>
-        <div>
-            <h1>Offerte Vergelijker</h1>
-            <p>Van Keulen — vergelijk PDF offerte met NETTO prijslijst en IB Budget</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    back_to_overview()
+    jumbo_header("🟡", "Offerte Vergelijker", "Van Keulen — vergelijk PDF offerte met NETTO prijslijst en IB Budget")
 
     # ── Sidebar ────────────────────────────────────────────────────────────────
     with st.sidebar:
@@ -762,5 +732,4 @@ def _show_results(df: pd.DataFrame, budget_summary: List[dict] = None):
         st.info("De Excel bevat dezelfde kleurcodering als de tabelweergave hierboven.")
 
 
-if __name__ == "__main__":
-    main()
+main()

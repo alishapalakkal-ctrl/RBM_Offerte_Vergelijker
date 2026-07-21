@@ -1,12 +1,13 @@
 # Offerte Vergelijker (Web)
 
 Streamlit-app die PDF-offertes vergelijkt met NETTO-prijslijsten en het IB-budget.
+De app heeft een startpagina met een tegel per leverancier (bijv. Van Keulen, Koeling).
 
 ## Lokaal draaien
 
 ```bash
 pip install -r ../requirements.txt
-python -m streamlit run offerte_vergelijker_web.py
+python -m streamlit run Home.py
 ```
 
 De app is dan bereikbaar op `http://localhost:8501`.
@@ -34,7 +35,11 @@ Kopieer de map `Van_Keulen` en het bestand `requirements.txt` naar de computer (
 project-map/
 ├── requirements.txt
 └── Van_Keulen/
-    └── offerte_vergelijker_web.py
+    ├── Home.py
+    ├── common.py
+    └── pages/
+        ├── 1_🟡_Van_Keulen.py
+        └── 2_🧊_Koeling.py
 ```
 
 > Als het via GitHub gedeeld is: gebruik "Code" → "Download ZIP" op de repository-pagina en pak het uit.
@@ -51,7 +56,7 @@ pip install -r requirements.txt
 
 ```bash
 cd Van_Keulen
-python -m streamlit run offerte_vergelijker_web.py
+python -m streamlit run Home.py
 ```
 
 Streamlit opent automatisch een browservenster op `http://localhost:8501`. Gebeurt dit niet, open dan die link handmatig.
@@ -137,6 +142,9 @@ az webapp auth update \
 
 | Bestand | Doel |
 |---|---|
-| `offerte_vergelijker_web.py` | De Streamlit-applicatie |
+| `Home.py` | Startpagina — kies een leverancier |
+| `common.py` | Gedeelde styling/header helpers |
+| `pages/1_🟡_Van_Keulen.py` | Sectie: Van Keulen vergelijker |
+| `pages/2_🧊_Koeling.py` | Sectie: Koeling vergelijker (in opbouw) |
 | `startup.sh` | Startcommando voor Azure App Service |
 | `../requirements.txt` | Python-dependencies (gedeeld met de andere scripts in dit project) |
