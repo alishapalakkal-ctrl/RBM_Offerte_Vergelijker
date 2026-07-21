@@ -1,6 +1,16 @@
 """Shared page-config, styling and header helpers for the Offerte Vergelijker app."""
 
+import base64
+from pathlib import Path
+
 import streamlit as st
+
+_LOGO_PATH = Path(__file__).parent / "assets" / "jumbo_logo.png"
+
+
+def _logo_data_uri() -> str:
+    data = base64.b64encode(_LOGO_PATH.read_bytes()).decode()
+    return f"data:image/png;base64,{data}"
 
 
 def configure_page(title: str, icon: str = "📊"):
@@ -33,9 +43,9 @@ def inject_base_style():
 def jumbo_header(icon: str, title: str, subtitle: str):
     st.markdown(f"""
     <div class="jumbo-hdr">
-        <div style="font-size:42px;line-height:1">{icon}</div>
+        <img src="{_logo_data_uri()}" style="height:48px;border-radius:4px" />
         <div>
-            <h1>{title}</h1>
+            <h1>{icon} {title}</h1>
             <p>{subtitle}</p>
         </div>
     </div>
