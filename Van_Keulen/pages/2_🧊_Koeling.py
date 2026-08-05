@@ -17,6 +17,7 @@ import base64
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from common import configure_page, inject_base_style, jumbo_header, back_to_overview
 
@@ -91,12 +92,26 @@ with tab_layout:
         pdf_bytes = layout_pdf_file.getvalue()
         b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
         st.caption("Groen = code en lengte kloppen met de offerte, rood = afwijking.")
-        st.markdown(
+        # Chrome blocks iframe navigation to large data: URIs outright, so the
+        # PDF is decoded client-side into a blob: URL instead (same-origin,
+        # not subject to that restriction) rather than set as the iframe src directly.
+        components.html(
             f"""
-            <iframe src="data:application/pdf;base64,{b64_pdf}"
-                    width="100%" height="900" style="border:none;"></iframe>
+            <iframe id="pdf-frame" width="100%" height="900" style="border:none;"></iframe>
+            <script>
+                const b64 = "{b64_pdf}";
+                const byteChars = atob(b64);
+                const byteNumbers = new Array(byteChars.length);
+                for (let i = 0; i < byteChars.length; i++) {{
+                    byteNumbers[i] = byteChars.charCodeAt(i);
+                }}
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], {{ type: "application/pdf" }});
+                const url = URL.createObjectURL(blob);
+                document.getElementById("pdf-frame").src = url;
+            </script>
             """,
-            unsafe_allow_html=True,
+            height=900,
         )
         st.download_button(
             "📥 Download layout (PDF)",
