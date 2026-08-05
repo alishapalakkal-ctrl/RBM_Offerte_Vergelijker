@@ -7,15 +7,13 @@ Unlike Van Keulen, the matching itself happens in Dynamo (Revit model
 position numbers matched to elements via bounding-box containment, see
 02_Positienummer Match.dyn). This page just visualizes what that graph
 exports:
-  - a POS/code/length comparison against the offerte
-  - a list of positions found in the Revit model that aren't in the offerte
-  - a Glass/Mirror side-wall accessory comparison, grouped per physical run
+  - a single combined Excel file (3 tabs: Vergelijking, Posities niet in
+    offerte, Accessoires) from the 'Compare & Export Koeling' node
   - the colored layout PDF (green/red per position) from the graph's
     'Export Koeling View to PDF' node
 """
 
 import base64
-import io
 
 import pandas as pd
 import streamlit as st
@@ -59,40 +57,28 @@ with wc:
 
 with st.sidebar:
     st.header("📂 Bestanden uploaden")
-    st.caption("Alle bestanden zijn exports van de Dynamo Positienummer Match graph.")
-    comparison_file = st.file_uploader("Vergelijking (POS/code/lengte vs. offerte)", type=["csv"])
-    extra_file = st.file_uploader("Posities niet in offerte", type=["csv"])
-    accessories_file = st.file_uploader("Accessoires (Glass/Mirror)", type=["csv"])
+    st.caption("Beide zijn exports van de Dynamo Positienummer Match graph.")
+    excel_file = st.file_uploader(
+        "Vergelijking (Excel, 3 tabbladen)",
+        type=["xlsx"],
+        help="Export van de 'Compare & Export Koeling' node — bevat Vergelijking, "
+             "Posities niet in offerte en Accessoires in één bestand.",
+    )
     layout_pdf_file = st.file_uploader("Layout (PDF, met positienummers gekleurd)", type=["pdf"])
 
+sheets = pd.read_excel(excel_file, sheet_name=None) if excel_file else {}
 uploaded = {
-    "Vergelijking": (comparison_file, pd.read_csv(comparison_file) if comparison_file else None),
-    "Posities niet in offerte": (extra_file, pd.read_csv(extra_file) if extra_file else None),
-    "Accessoires": (accessories_file, pd.read_csv(accessories_file) if accessories_file else None),
+    "Vergelijking": (excel_file, sheets.get("Vergelijking")),
+    "Posities niet in offerte": (excel_file, sheets.get("Posities niet in offerte")),
+    "Accessoires": (excel_file, sheets.get("Accessoires")),
 }
 
-if all(df is None for _, df in uploaded.values()) and layout_pdf_file is None:
+if excel_file is None and layout_pdf_file is None:
     st.info(
-        "Upload een of meer bestanden via de zijbalk — allemaal exports van de Dynamo "
-        "Positienummer Match graph (zie 00_RBM_Offerte Vergelijker/Koeling)."
+        "Upload de vergelijkings-Excel en/of de layout-PDF via de zijbalk — beide zijn "
+        "exports van de Dynamo Positienummer Match graph (zie 00_RBM_Offerte Vergelijker/Koeling)."
     )
     st.stop()
-
-with st.sidebar:
-    st.divider()
-    loaded_sheets = {name: df for name, (_, df) in uploaded.items() if df is not None}
-    if loaded_sheets:
-        buf = io.BytesIO()
-        with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            for sheet_name, df in loaded_sheets.items():
-                df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
-        st.download_button(
-            "📥 Download alles als Excel",
-            data=buf.getvalue(),
-            file_name="koeling_vergelijking.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
 
 tab_layout, tab_compare, tab_extra, tab_accessories = st.tabs(
     ["🗺️ Layout", "📋 Vergelijking", "➕ Posities niet in offerte", "🪟 Accessoires (Glass/Mirror)"]
@@ -122,7 +108,7 @@ with tab_layout:
 with tab_compare:
     df = uploaded["Vergelijking"][1]
     if df is None:
-        st.info("Upload de vergelijkings-CSV om deze tab te zien.")
+        st.info("Upload de vergelijkings-Excel om deze tab te zien.")
     else:
         total = len(df)
         code_mismatch = int((df["code_match"] == False).sum())
@@ -155,7 +141,7 @@ with tab_compare:
 with tab_extra:
     df_extra = uploaded["Posities niet in offerte"][1]
     if df_extra is None:
-        st.info("Upload de 'posities niet in offerte'-CSV om deze tab te zien.")
+        st.info("Upload de vergelijkings-Excel om deze tab te zien.")
     elif df_extra.empty:
         st.success("Geen extra posities gevonden — alle posities in het model staan ook in de offerte.")
     else:
@@ -183,7 +169,7 @@ with tab_extra:
 with tab_accessories:
     df_acc = uploaded["Accessoires"][1]
     if df_acc is None:
-        st.info("Upload de accessoires-CSV om deze tab te zien.")
+        st.info("Upload de vergelijkings-Excel om deze tab te zien.")
     else:
         total = len(df_acc)
         mismatches = int(((df_acc["glass_match"] == False) | (df_acc["mirror_match"] == False)).sum())
