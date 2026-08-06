@@ -13,11 +13,9 @@ exports:
     'Export Koeling View to PDF' node
 """
 
-import base64
-
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+from streamlit_pdf_viewer import pdf_viewer
 
 from common import configure_page, inject_base_style, jumbo_header, back_to_overview
 
@@ -90,29 +88,8 @@ with tab_layout:
         st.info("Upload de layout-PDF om deze tab te zien (export vanuit de 'Export Koeling View to PDF' Dynamo-node).")
     else:
         pdf_bytes = layout_pdf_file.getvalue()
-        b64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
         st.caption("Groen = code en lengte kloppen met de offerte, rood = afwijking.")
-        # Chrome blocks iframe navigation to large data: URIs outright, so the
-        # PDF is decoded client-side into a blob: URL instead (same-origin,
-        # not subject to that restriction) rather than set as the iframe src directly.
-        components.html(
-            f"""
-            <iframe id="pdf-frame" width="100%" height="900" style="border:none;"></iframe>
-            <script>
-                const b64 = "{b64_pdf}";
-                const byteChars = atob(b64);
-                const byteNumbers = new Array(byteChars.length);
-                for (let i = 0; i < byteChars.length; i++) {{
-                    byteNumbers[i] = byteChars.charCodeAt(i);
-                }}
-                const byteArray = new Uint8Array(byteNumbers);
-                const blob = new Blob([byteArray], {{ type: "application/pdf" }});
-                const url = URL.createObjectURL(blob);
-                document.getElementById("pdf-frame").src = url;
-            </script>
-            """,
-            height=900,
-        )
+        pdf_viewer(pdf_bytes, width="100%", height=900)
         st.download_button(
             "📥 Download layout (PDF)",
             data=pdf_bytes,

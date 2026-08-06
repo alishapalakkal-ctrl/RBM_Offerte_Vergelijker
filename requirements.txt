@@ -1,4 +1,5 @@
 streamlit>=1.35,<1.50
+streamlit-pdf-viewer>=0.0.20
 pdfplumber>=0.11
 pandas>=2.1
 openpyxl>=3.1
