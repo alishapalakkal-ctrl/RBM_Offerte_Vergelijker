@@ -425,10 +425,21 @@ def _style(df: pd.DataFrame) -> "pd.io.formats.style.Styler":
 
 # ─── Budget Summary Rows ──────────────────────────────────────────────────────
 
-def read_budget_summary_rows(src, row_start: int, row_end: int) -> List[dict]:
-    """Read rows row_start..row_end (1-based) from Budget sheet, keep rows where aantal >= 1."""
+# These IB rows are Lamellen Plafond items that actually belong to a different
+# supplier — when present (aantal > 1) they must be flagged and left out of the
+# Van Keulen IB total rather than silently mixed in.
+LAMELLEN_PLAFOND_ROWS = {2263, 2264}
+
+
+def read_budget_summary_rows(src, row_start: int, row_end: int) -> tuple[List[dict], List[dict]]:
+    """Read rows row_start..row_end (1-based) from Budget sheet, keep rows where aantal >= 1.
+
+    Returns (rows, excluded) where `excluded` holds the Lamellen Plafond rows
+    that were skipped because they belong to a different supplier.
+    """
     df = pd.read_excel(src, sheet_name="Budget", header=None, engine="openpyxl")
     rows = []
+    excluded = []
     for rn in range(row_start, row_end + 1):
         idx = rn - 1
         if idx >= len(df):
@@ -444,7 +455,7 @@ def read_budget_summary_rows(src, row_start: int, row_end: int) -> List[dict]:
         except: continue
         if not pd.notna(prijs) or prijs <= 0:
             continue
-        rows.append({
+        item = {
             "rij":         rn,
             "nummer":      cell(6),
             "artikelnaam": cell(7),
@@ -452,8 +463,12 @@ def read_budget_summary_rows(src, row_start: int, row_end: int) -> List[dict]:
             "aantal":      aantal,
             "prijs":       prijs,
             "totaal":      round(aantal * prijs, 2),
-        })
-    return rows
+        }
+        if rn in LAMELLEN_PLAFOND_ROWS and aantal > 1:
+            excluded.append(item)
+            continue
+        rows.append(item)
+    return rows, excluded
 
 
 # ─── Excel Export ──────────────────────────────────────────────────────────────
@@ -527,11 +542,12 @@ def main():
 
     # ── Session state ──────────────────────────────────────────────────────────
     if "df" not in st.session_state:
-        st.session_state.df             = None
-        st.session_state.results        = []
-        st.session_state.budget_summary = []
-        st.session_state.raw_pdf_total  = 0.0
-        st.session_state.raw_pdf_count  = 0
+        st.session_state.df               = None
+        st.session_state.results          = []
+        st.session_state.budget_summary   = []
+        st.session_state.lamellen_excluded = []
+        st.session_state.raw_pdf_total    = 0.0
+        st.session_state.raw_pdf_count    = 0
 
     # ── Run ────────────────────────────────────────────────────────────────────
     if run:
@@ -542,7 +558,7 @@ def main():
 
     # ── Display ────────────────────────────────────────────────────────────────
     if st.session_state.df is not None:
-        _show_results(st.session_state.df, st.session_state.budget_summary)
+        _show_results(st.session_state.df, st.session_state.budget_summary, st.session_state.lamellen_excluded)
     else:
         st.info("Upload bestanden via de zijbalk en klik op **Analyseren** om te beginnen.")
 
@@ -564,26 +580,36 @@ def _run_analysis(pdf_file, netto_file, budget_file):
     bar.progress(55, f"NETTO: {len(netto_items)} items. IB Budget lezen…")
     ib_items: List[IBItem] = []
     budget_summary: List[dict] = []
+    lamellen_excluded: List[dict] = []
     if budget_file:
         budget_bytes = budget_file.read()
         ib_items       = read_ib_items(io.BytesIO(budget_bytes))
-        budget_summary = read_budget_summary_rows(io.BytesIO(budget_bytes), 1986, 2763)
+        budget_summary, lamellen_excluded = read_budget_summary_rows(io.BytesIO(budget_bytes), 1986, 2763)
 
     bar.progress(75, f"Matchen ({len(pdf_items)} PDF × {len(netto_items)} NETTO)…")
     results = build_matches(pdf_items, netto_items, ib_items)
     df = results_to_df(results)
 
-    st.session_state.df             = df
-    st.session_state.results        = results
-    st.session_state.budget_summary = budget_summary
-    st.session_state.raw_pdf_total  = sum(item.total for item in pdf_items)
-    st.session_state.raw_pdf_count  = len(pdf_items)
+    st.session_state.df                = df
+    st.session_state.results           = results
+    st.session_state.budget_summary    = budget_summary
+    st.session_state.lamellen_excluded = lamellen_excluded
+    st.session_state.raw_pdf_total     = sum(item.total for item in pdf_items)
+    st.session_state.raw_pdf_count     = len(pdf_items)
     bar.progress(100, "Klaar!")
     bar.empty()
     st.rerun()
 
 
-def _show_results(df: pd.DataFrame, budget_summary: List[dict] = None):
+def _show_results(df: pd.DataFrame, budget_summary: List[dict] = None, lamellen_excluded: List[dict] = None):
+    if lamellen_excluded:
+        rijen = ", ".join(str(r["rij"]) for r in lamellen_excluded)
+        st.error(
+            f"⚠️ Lamellen Plafond will not be calculated with Van Keulen — "
+            f"dit item hoort bij een andere leverancier (IB budget rij {rijen}). "
+            f"Deze rij(en) zijn uitgesloten van het IB totaal."
+        )
+
     # ── Metrics ────────────────────────────────────────────────────────────────
     total     = len(df)
     exact     = int((df["Methode"] == "exact_artnr").sum())
