@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Offerte Vergelijker – landing page.
-Run locally:  streamlit run Van_Keulen/Home.py
+Run locally:  streamlit run IB_met_OfferteVergelijker/Home.py
 """
 
 import streamlit as st

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Offerte Vergelijker – Van Keulen section.
-Run via the app entrypoint:  streamlit run Van_Keulen/Home.py
+Run via the app entrypoint:  streamlit run IB_met_OfferteVergelijker/Home.py
 """
 
 import io

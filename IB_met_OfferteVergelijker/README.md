@@ -29,12 +29,12 @@ python --version
 
 ### 2. Bestanden ontvangen
 
-Kopieer de map `Van_Keulen` en het bestand `requirements.txt` naar de computer (bijv. via een USB-stick, e-mail-bijlage, of gedeelde map), met deze structuur:
+Kopieer de map `IB_met_OfferteVergelijker` en het bestand `requirements.txt` naar de computer (bijv. via een USB-stick, e-mail-bijlage, of gedeelde map), met deze structuur:
 
 ```
 project-map/
 ├── requirements.txt
-└── Van_Keulen/
+└── IB_met_OfferteVergelijker/
     ├── Home.py
     ├── common.py
     └── pages/
@@ -55,7 +55,7 @@ pip install -r requirements.txt
 ### 4. App starten
 
 ```bash
-cd Van_Keulen
+cd IB_met_OfferteVergelijker
 python -m streamlit run Home.py
 ```
 
@@ -97,7 +97,7 @@ App Service moet weten hoe de app te starten (`startup.sh` in deze map):
 az webapp config set \
   -n offerte-vergelijker \
   --resource-group rg-offerte-app \
-  --startup-file "Van_Keulen/startup.sh"
+  --startup-file "IB_met_OfferteVergelijker/startup.sh"
 ```
 
 ### 3. Deployen

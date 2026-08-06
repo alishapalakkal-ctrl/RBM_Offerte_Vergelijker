@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Offerte Vergelijker – Koeling section.
-Run via the app entrypoint:  streamlit run Van_Keulen/Home.py
+Run via the app entrypoint:  streamlit run IB_met_OfferteVergelijker/Home.py
 
 Unlike Van Keulen, the matching itself happens in Dynamo (Revit model
 position numbers matched to elements via bounding-box containment, see
