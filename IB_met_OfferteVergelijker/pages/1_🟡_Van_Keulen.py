@@ -137,7 +137,7 @@ def parse_pdf(path) -> List[PdfItem]:
     page_nr = 0
 
     def flush():
-        nonlocal art_nr, lines
+        nonlocal art_nr, lines, manual_ref
         if not art_nr:
             return
         text = " ".join(lines).strip()
@@ -153,6 +153,10 @@ def parse_pdf(path) -> List[PdfItem]:
                 ))
         art_nr = ""
         lines.clear()
+        # A Manual code only applies to the single item it directly precedes —
+        # clear it here so later items without their own "Manual ..." line
+        # don't inherit a stale code from an earlier one.
+        manual_ref = ""
 
     with pdfplumber.open(path) as pdf:
         for page_num, page in enumerate(pdf.pages, 1):
@@ -380,7 +384,7 @@ def results_to_df(results: List[MatchResult]) -> pd.DataFrame:
             "_status":          status,
             "Methode":          first.pdf_match_method,   # kept for filters/metrics, hidden in table
             "Art.nr.":          pi.art_nr,
-            "Manual nr.":       ni.manual_nr        if ni else "",
+            "Manual nr.":       ni.manual_nr        if (ni and pi.manual_ref) else "",
             "Omschrijving":     pi.description,
             "Sectie":           " / ".join(secs),
             "PDF Aantal":       total_qty,
