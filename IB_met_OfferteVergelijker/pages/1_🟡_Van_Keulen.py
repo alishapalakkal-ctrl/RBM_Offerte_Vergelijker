@@ -426,7 +426,7 @@ def results_to_df(results: List[MatchResult]) -> pd.DataFrame:
             "_status":          status,
             "Methode":          first.pdf_match_method,   # kept for filters/metrics, hidden in table
             "Art.nr.":          pi.art_nr,
-            "Manual nr.":       ni.manual_nr        if (ni and pi.manual_ref) else "",
+            "Manual nr.":       pi.manual_ref       if pi.manual_ref else "",
             "Omschrijving":     pi.description,
             "Sectie":           " / ".join(secs),
             "PDF Aantal":       total_qty,
