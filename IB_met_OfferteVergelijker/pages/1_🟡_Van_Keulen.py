@@ -297,7 +297,16 @@ def build_matches(
     fuzzy_threshold: int = 70,
     ib_row_override: Dict[str, IBItem] = None,
 ) -> List[MatchResult]:
-    by_artnr:  Dict[str, NettoItem]        = {n.art_nr_leverancier: n for n in netto_items if n.art_nr_leverancier}
+    # A NETTO art.nr. leverancier can list multiple article numbers joined by
+    # "+" (e.g. "492927+492928") meaning either one refers to this row.
+    by_artnr: Dict[str, NettoItem] = {}
+    for n in netto_items:
+        if not n.art_nr_leverancier:
+            continue
+        for part in n.art_nr_leverancier.split('+'):
+            part = part.strip()
+            if part:
+                by_artnr[part] = n
     by_manual: Dict[str, List[NettoItem]]  = {}
     for n in netto_items:
         k = n.manual_nr.strip().upper()
