@@ -671,11 +671,11 @@ def _show_results(df: pd.DataFrame, budget_summary: List[dict] = None, lamellen_
         st.dataframe(_style(fdf.reset_index(drop=True)), use_container_width=True, height=540)
 
     with tab_rev:
-        rdf = df[df["Methode"].isin(["fuzzy", "unmatched"])].reset_index(drop=True)
+        rdf = df[df["_status"] == "qty_diff"].reset_index(drop=True)
         if rdf.empty:
-            st.success("Geen items te controleren — alles exact of via manual code gematch!")
+            st.success("Geen items te controleren — geen aantalverschillen gevonden!")
         else:
-            st.caption(f"{len(rdf)} items vereisen handmatige controle")
+            st.caption(f"{len(rdf)} items met aantalverschil vereisen handmatige controle")
             st.dataframe(_style(rdf), use_container_width=True, height=500)
 
     with tab_sam:
