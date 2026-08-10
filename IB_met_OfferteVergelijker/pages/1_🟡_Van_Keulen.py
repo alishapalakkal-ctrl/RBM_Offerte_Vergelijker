@@ -76,6 +76,7 @@ class IBItem:
     quantity: float
     price: float
     pdf_art_nr: str
+    row: int = 0
 
 
 @dataclass
@@ -249,9 +250,42 @@ def read_ib_items(src, row_start: int = 1440, row_end: int = 2763) -> List[IBIte
             pdf_nr = ""
         items.append(IBItem(
             nummer=cell(6), description=desc, manual=cell(8), unit=cell(9),
-            quantity=qty, price=price, pdf_art_nr=pdf_nr,
+            quantity=qty, price=price, pdf_art_nr=pdf_nr, row=idx + 1,
         ))
     return items
+
+
+# PDF art.nr. -> hardcoded IB Budget row. Bypasses the normal art.nr./fuzzy
+# matching for cases where the correct IB row is known but doesn't match
+# through the usual lookup (e.g. it's outside the standard row filter).
+IB_ROW_OVERRIDE: Dict[str, int] = {
+    "334363": 2612,
+}
+
+
+def read_ib_row_overrides(src, mapping: Dict[str, int] = IB_ROW_OVERRIDE) -> Dict[str, "IBItem"]:
+    """Read specific Budget-sheet rows directly (ignoring the normal row
+    filters) for article numbers with a hardcoded IB row mapping."""
+    if not mapping:
+        return {}
+    df = pd.read_excel(src, sheet_name="Budget", header=None, engine="openpyxl")
+    result: Dict[str, IBItem] = {}
+    for art_nr, row_nr in mapping.items():
+        idx = row_nr - 1
+        if idx >= len(df):
+            continue
+        row = df.iloc[idx]
+        def cell(i):
+            return str(row.iloc[i]).strip() if i < len(row) and pd.notna(row.iloc[i]) else ""
+        try:    qty   = float(row.iloc[10])
+        except: qty   = 0.0
+        try:    price = float(row.iloc[11])
+        except: price = 0.0
+        result[art_nr] = IBItem(
+            nummer=cell(6), description=cell(7), manual=cell(8), unit=cell(9),
+            quantity=qty, price=price, pdf_art_nr=art_nr, row=row_nr,
+        )
+    return result
 
 
 # ─── Matcher ───────────────────────────────────────────────────────────────────
@@ -261,6 +295,7 @@ def build_matches(
     netto_items: List[NettoItem],
     ib_items: List[IBItem],
     fuzzy_threshold: int = 70,
+    ib_row_override: Dict[str, IBItem] = None,
 ) -> List[MatchResult]:
     by_artnr:  Dict[str, NettoItem]        = {n.art_nr_leverancier: n for n in netto_items if n.art_nr_leverancier}
     by_manual: Dict[str, List[NettoItem]]  = {}
@@ -313,6 +348,13 @@ def build_matches(
                 mr.netto_item = netto_items[n_descs.index(best[0])]
                 mr.pdf_match_method = "fuzzy"
                 mr.confidence = best[1] / 100.0
+
+        override = ib_row_override.get(pi.art_nr) if ib_row_override else None
+        if override:
+            mr.ib_items = [override]
+            mr.ib_match_method = "manual_row"
+            results.append(mr)
+            continue
 
         ii = ib_by_pdf.get(pi.art_nr)
         if ii:
@@ -594,13 +636,15 @@ def _run_analysis(pdf_file, netto_file, budget_file):
     ib_items: List[IBItem] = []
     budget_summary: List[dict] = []
     lamellen_excluded: List[dict] = []
+    ib_row_override: Dict[str, IBItem] = {}
     if budget_file:
         budget_bytes = budget_file.read()
         ib_items       = read_ib_items(io.BytesIO(budget_bytes))
         budget_summary, lamellen_excluded = read_budget_summary_rows(io.BytesIO(budget_bytes), 1986, 2763)
+        ib_row_override = read_ib_row_overrides(io.BytesIO(budget_bytes))
 
     bar.progress(75, f"Matchen ({len(pdf_items)} PDF × {len(netto_items)} NETTO)…")
-    results = build_matches(pdf_items, netto_items, ib_items)
+    results = build_matches(pdf_items, netto_items, ib_items, ib_row_override=ib_row_override)
     df = results_to_df(results)
 
     st.session_state.df                = df
