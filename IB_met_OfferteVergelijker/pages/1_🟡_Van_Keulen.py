@@ -283,13 +283,22 @@ def build_matches(
             cands = by_manual.get(pi.manual_ref.strip().upper(), [])
             if cands:
                 if HAS_RAPIDFUZZ and len(cands) > 1:
+                    # Multiple NETTO rows share this manual code — only accept the
+                    # best description match if it clears the fuzzy threshold, so a
+                    # weak/ambiguous pick doesn't silently attach the wrong row.
                     ds   = [c.description for c in cands]
-                    best = rfprocess.extractOne(pi.description, ds, scorer=fuzz.token_set_ratio)
-                    mr.netto_item = cands[ds.index(best[0])] if best else cands[0]
+                    best = rfprocess.extractOne(
+                        pi.description, ds,
+                        scorer=fuzz.token_set_ratio, score_cutoff=fuzzy_threshold,
+                    )
+                    if best:
+                        mr.netto_item = cands[ds.index(best[0])]
+                        mr.pdf_match_method = "manual_code"
+                        mr.confidence = best[1] / 100.0
                 else:
                     mr.netto_item = cands[0]
-                mr.pdf_match_method = "manual_code"
-                mr.confidence = 0.85
+                    mr.pdf_match_method = "manual_code"
+                    mr.confidence = 0.85
 
         if not mr.netto_item and HAS_RAPIDFUZZ:
             best = rfprocess.extractOne(
