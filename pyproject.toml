@@ -1,0 +1,31 @@
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Default rule set (E4/E7/E9 + F) plus a couple of extras worth catching in a
+# Streamlit app: unused noqa, bugbear's common footguns.
+select = ["E4", "E7", "E9", "F", "B"]
+ignore = [
+    "E701",  # multiple statements on one line (colon) — `try: x = f()` /
+             # `except: x = default` one-liners, used deliberately for terse
+             # "coerce this Excel cell, else fall back" reads throughout.
+    "E702",  # multiple statements on one line (semicolon) — same style,
+             # e.g. `used_off.add(i); used_ib.add(j)`.
+    "E712",  # `== False` comparisons — required here: these compare pandas
+             # boolean Series (`df["code_match"] == False`), where `not df[...]`
+             # raises ValueError (ambiguous truth value), so ruff's own
+             # suggested fix would break the code.
+    "E722",  # bare `except:` — used deliberately throughout for terse
+             # "coerce this Excel cell to float or give up" one-liners.
+    "E731",  # lambda assigned to a variable — used for small formatters
+             # (money/pct/num) passed straight into pandas .style.format().
+    "B023",  # closures over a loop variable — the `def cell(i): ...` helpers
+             # are defined and called within the same loop iteration only,
+             # never stored past it, so the usual late-binding footgun doesn't
+             # apply here.
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["IB_met_OfferteVergelijker"]
+testpaths = ["tests"]
