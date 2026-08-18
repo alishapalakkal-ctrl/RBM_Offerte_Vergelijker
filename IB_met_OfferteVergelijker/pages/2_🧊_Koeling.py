@@ -26,6 +26,7 @@ Two independent sub-flows, chosen up front:
 
 import io
 
+import altair as alt
 import openpyxl
 import pandas as pd
 import streamlit as st
@@ -37,9 +38,11 @@ from matching_koeling import (
     apply_art_nr_mapping,
     build_budget_link,
     build_buffetten_link,
+    build_categorie_totalen,
     build_installatie_df,
     load_art_nr_mapping,
     load_budget_df,
+    load_categorie_budget_codes,
     match_koeling_installatie,
     parse_ib,
     parse_nrfp,
@@ -49,6 +52,23 @@ from matching_koeling import (
 
 configure_page("Offerte Vergelijker – Koeling", icon="🧊")
 inject_base_style()
+
+
+#: Koelcellen, vriescellen and celaccessoires are one physical scope from
+#: the koelinstallateur's perspective (the cellen plus the accessories that
+#: go with them) even though the offerte/Budget book them as three separate
+#: categories — grouped together for the verschil-per-categorie pie chart
+#: so it reads as one slice instead of three slivers.
+_PIE_CATEGORIE_GROEP = {
+    "Categorie koelcellen": "Koel-/vriescellen (incl. celaccessoires)",
+    "Categorie vriescellen": "Koel-/vriescellen (incl. celaccessoires)",
+    "Categorie celaccessoires": "Koel-/vriescellen (incl. celaccessoires)",
+}
+
+
+def _pie_categorie_label(categorie: str) -> str:
+    grouped = _PIE_CATEGORIE_GROEP.get(categorie, categorie)
+    return grouped[len("Categorie "):] if grouped.startswith("Categorie ") else grouped
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -117,6 +137,7 @@ def _run_koel_installatie():
         st.session_state.koel_inst_mapping_filled = 0
         st.session_state.koel_inst_mapping_size = 0
         st.session_state.koel_inst_nrfp_items = []
+        st.session_state.koel_inst_categorie_totalen = {}
 
     if run:
         if not ib_file or not bid_file:
@@ -135,7 +156,11 @@ def _run_koel_installatie():
             "omschrijvingen) — de offerte zelf had geen Art.Nr.Jumbo voor deze regels."
         )
 
-    _show_koel_installatie_results(st.session_state.koel_inst_df, st.session_state.koel_inst_nrfp_items)
+    _show_koel_installatie_results(
+        st.session_state.koel_inst_df,
+        st.session_state.koel_inst_nrfp_items,
+        st.session_state.koel_inst_categorie_totalen,
+    )
 
 
 def _analyze_koel_installatie(ib_file, bid_file):
@@ -171,16 +196,20 @@ def _analyze_koel_installatie(ib_file, bid_file):
         buffetten_link = build_buffetten_link(bdf, offerte)
         df = build_installatie_df(offerte, ib, matches, budget_link, buffetten_link)
         nrfp_items = parse_nrfp(bid_bytes)
+        categorie_mapping = load_categorie_budget_codes()
+        categorie_totalen = build_categorie_totalen(bdf, categorie_mapping)
 
     st.session_state.koel_inst_df = df
     st.session_state.koel_inst_mapping_filled = mapping_filled
     st.session_state.koel_inst_mapping_size = len(art_nr_mapping)
     st.session_state.koel_inst_nrfp_items = nrfp_items
+    st.session_state.koel_inst_categorie_totalen = categorie_totalen
     st.rerun()
 
 
-def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None):
+def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None, categorie_totalen=None):
     nrfp_items = nrfp_items or []
+    categorie_totalen = categorie_totalen or {}
     # Only show offerte lines that were actually selected for this project
     # (Offerte Aantal filled in) — most rows are unused catalog alternatives
     # (e.g. Boosterset 1-5 when only one size was chosen) with no aantal.
@@ -201,8 +230,10 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None):
     c5.metric("Prijs ≠", prijs_afw)
     c6.metric("Aantal ≠", aantal_afw)
 
-    tab_all, tab_fuzzy, tab_sam, tab_exp = st.tabs(
-        ["📋 Alle resultaten", "🔎 Fuzzy matches (controleren)", "📊 Samenvatting", "💾 Export"]
+    # Samenvatting first — the tab a user should land on right after
+    # Analyseren, per project convention (see CLAUDE.md).
+    tab_sam, tab_all, tab_fuzzy, tab_exp = st.tabs(
+        ["📊 Samenvatting", "📋 Alle resultaten", "🔎 Fuzzy matches (controleren)", "💾 Export"]
     )
 
     with tab_all:
@@ -225,14 +256,36 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None):
 
     with tab_sam:
         offerte_totaal = float(df["_offerte_totaal"].sum(skipna=True))
-        ib_totaal = float(df["_ib_totaal"].sum(skipna=True))
+
+        # cat_df is built once, up front, and reused for the top "Totaal IB"
+        # KPI, the categorie table and the pie chart below — its "Totaal IB"
+        # already prefers the Budget subheading's own Totaal (via
+        # categorie_totalen) over the per-row rollup, which is the more
+        # realistic figure: the per-row rollup reads 0 for a variant the
+        # offerte quoted but IB ended up not selecting.
+        cat_df = (
+            df.groupby("Categorie", dropna=False)[["_offerte_totaal", "_ib_totaal"]]
+            .sum(min_count=1)
+            .reset_index()
+            .rename(columns={"_offerte_totaal": "Totaal Offerte", "_ib_totaal": "Totaal IB"})
+        )
+        if categorie_totalen:
+            cat_df["Totaal IB"] = cat_df.apply(
+                lambda r: categorie_totalen.get(r["Categorie"], r["Totaal IB"]), axis=1
+            )
+        cat_df["Verschil"] = cat_df["Totaal Offerte"] - cat_df["Totaal IB"]
+        cat_df = cat_df.sort_values("Totaal Offerte", ascending=False, na_position="last")
+
+        ib_totaal = float(cat_df["Totaal IB"].sum(skipna=True))
         diff = offerte_totaal - ib_totaal
         diff_pct = diff / ib_totaal * 100 if ib_totaal else 0
 
         k1, k2, k3 = st.columns(3)
         k1.metric("Totaal Offerte", f"€ {offerte_totaal:,.2f}",
                    help="(Prijs materiaal + Arbeidskosten) × Offerte Aantal, alleen regels met een ingevuld aantal")
-        k2.metric("Totaal IB", f"€ {ib_totaal:,.2f}", help="IB Prijs p.e. × Offerte Aantal, voor dezelfde regels")
+        k2.metric("Totaal IB", f"€ {ib_totaal:,.2f}",
+                   help="Som van Totaal per categorie hieronder — per categorie, waar bekend, de Budget "
+                        "subtotaal-regel zelf, anders IB Prijs p.e. × Offerte Aantal per regel")
         diff_label = f"{'▲' if diff > 0 else '▼'} € {abs(diff):,.2f}  ({diff_pct:+.1f}%)"
         k3.metric("Verschil", diff_label, delta_color="inverse" if diff > 0 else "normal")
 
@@ -247,31 +300,15 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None):
         n1, n2 = st.columns(2)
         n1.metric("NRFP totaal", f"€ {nrfp_totaal:,.2f}")
         n2.metric("Totaal Offerte incl. NRFP", f"€ {offerte_totaal + nrfp_totaal:,.2f}")
-        if nrfp_items:
-            nrfp_df = pd.DataFrame([{
-                "Code": it.code, "Omschrijving": it.omschrijving,
-                "Prijs": it.prijs, "Aantal": it.aantal, "Totaal": it.totaal,
-            } for it in nrfp_items])
-            st.dataframe(
-                nrfp_df.style.format({
-                    "Prijs": lambda x: f"€ {x:,.2f}" if pd.notna(x) else "",
-                    "Aantal": lambda x: f"{x:g}" if pd.notna(x) else "",
-                    "Totaal": lambda x: f"€ {x:,.2f}" if pd.notna(x) else "",
-                }),
-                use_container_width=True, hide_index=True,
-            )
 
         st.divider()
 
         st.subheader("Totaal per categorie")
-        cat_df = (
-            df.groupby("Categorie", dropna=False)[["_offerte_totaal", "_ib_totaal"]]
-            .sum(min_count=1)
-            .reset_index()
-            .rename(columns={"_offerte_totaal": "Totaal Offerte", "_ib_totaal": "Totaal IB"})
+        st.caption(
+            "Totaal IB komt, waar bekend, rechtstreeks uit de bijbehorende subtotaal-regel op het "
+            "Budget-tabblad (bijv. 'Gascooler') — dat blijft correct ook als IB een andere variant heeft "
+            "gekozen dan de offerte, zie data/koeling_categorie_budget_codes.csv."
         )
-        cat_df["Verschil"] = cat_df["Totaal Offerte"] - cat_df["Totaal IB"]
-        cat_df = cat_df.sort_values("Totaal Offerte", ascending=False, na_position="last")
         st.dataframe(
             cat_df.style.format({
                 "Totaal Offerte": lambda x: f"€ {x:,.2f}" if pd.notna(x) else "",
@@ -280,6 +317,46 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None):
             }),
             use_container_width=True, hide_index=True,
         )
+
+        pie_df = cat_df.dropna(subset=["Verschil"]).copy()
+        pie_df["Groep"] = pie_df["Categorie"].map(_pie_categorie_label)
+        pie_df = pie_df.groupby("Groep", as_index=False)["Verschil"].sum()
+        pie_df["Abs verschil"] = pie_df["Verschil"].abs()
+        pie_df = pie_df[pie_df["Abs verschil"] > 0]
+
+        if not pie_df.empty:
+            c_pie, c_note = st.columns([1, 1])
+            with c_pie:
+                chart = (
+                    alt.Chart(pie_df)
+                    .mark_arc()
+                    .encode(
+                        theta=alt.Theta("Abs verschil:Q", title="Absoluut verschil (€)"),
+                        color=alt.Color("Groep:N", title="Categorie"),
+                        tooltip=[
+                            alt.Tooltip("Groep:N", title="Categorie"),
+                            alt.Tooltip("Verschil:Q", title="Verschil (€)", format=",.2f"),
+                        ],
+                    )
+                )
+                st.altair_chart(chart, use_container_width=True)
+            with c_note:
+                top = pie_df.sort_values("Abs verschil", ascending=False).iloc[0]
+                top_share = top["Abs verschil"] / pie_df["Abs verschil"].sum() * 100
+                st.markdown("**Analyse**")
+                st.write(
+                    f"Het grootste deel van het verschil zit in **{top['Groep']}** "
+                    f"(€ {top['Verschil']:,.2f}, {top_share:.0f}% van het totale absolute verschil "
+                    "tussen offerte en IB voor deze regels)."
+                )
+                st.caption(
+                    "Een verschil in begroting hoeft geen fout te zijn — het kan ook ontstaan doordat IB en "
+                    "de koelinstallateur op een andere manier rekenen: bijv. IB begroot per m² celvloer/"
+                    "-wand of per project-eenheid, terwijl de installateur per stuk/component offreert, of "
+                    "er is een andere verdeling tussen materiaal- en arbeidskosten aangehouden. Controleer bij "
+                    "een groot verschil eerst of beide partijen dezelfde eenheid en scope hanteren voordat je "
+                    "dit als een echte prijsafwijking behandelt."
+                )
 
         st.divider()
 

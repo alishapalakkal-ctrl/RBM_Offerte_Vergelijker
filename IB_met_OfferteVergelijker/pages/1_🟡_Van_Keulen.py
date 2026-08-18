@@ -239,7 +239,9 @@ def _show_results(df: pd.DataFrame, budget_summary: List[dict] = None, lamellen_
     c7.metric("Prijs ≠",       prc_afw,   help="Prijs verschil PDF vs NETTO")
 
     # ── Tabs ───────────────────────────────────────────────────────────────────
-    tab_all, tab_rev, tab_sam, tab_exp = st.tabs(["📋 Alle resultaten", "⚠️ Te controleren", "📊 Samenvatting", "💾 Export"])
+    # Samenvatting first — the tab a user should land on right after
+    # Analyseren, per project convention (see CLAUDE.md).
+    tab_sam, tab_all, tab_rev, tab_exp = st.tabs(["📊 Samenvatting", "📋 Alle resultaten", "⚠️ Te controleren", "💾 Export"])
 
     with tab_all:
         # Filters

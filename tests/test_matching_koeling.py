@@ -253,6 +253,32 @@ def test_build_budget_link_none_bdf_returns_empty():
     assert build_budget_link(None, [_ib_item()]) == {}
 
 
+@pytest.mark.skipif(not HAS_RAPIDFUZZ, reason="rapidfuzz not installed")
+def test_build_budget_link_falls_back_when_matched_row_has_no_aantal():
+    # Suffix-joined row (0470) has no aantal — IB actually selected a
+    # differently-numbered but similarly-described variant on another row.
+    ib = [_ib_item(row=5, art_nr_jumbo="Jum-ko-0470", omschrijving="Bypass valve 5")]
+    bdf = _budget_df({
+        1: ("COOL-001", "0470 Bypass valve 5", 0),
+        2: ("COOL-002", "Bypass valve 4", 3.0),
+    })
+
+    links = build_budget_link(bdf, ib, row_start=1, row_end=2)
+
+    assert links[5].budget_row == 2
+    assert links[5].aantal == 3.0
+
+
+def test_build_budget_link_keeps_zero_aantal_when_no_better_match():
+    ib = [_ib_item(row=5, art_nr_jumbo="Jum-ko-0470", omschrijving="Bypass valve 5")]
+    bdf = _budget_df({1: ("COOL-001", "0470 Bypass valve 5", 0)})
+
+    links = build_budget_link(bdf, ib, row_start=1, row_end=1)
+
+    assert links[5].budget_row == 1
+    assert not links[5].aantal
+
+
 def test_build_buffetten_link_manual_code_takes_priority():
     offerte = [_offerte_item(row=1, categorie="Categorie buffetten", art_manual="19.81")]
     bdf = _budget_df({1442: ("19.81", "19.81 Saladiere buffet", 1.0)})

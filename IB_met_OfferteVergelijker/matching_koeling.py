@@ -271,7 +271,6 @@ class BudgetLink:
     aantal: Optional[float]
     prijs: Optional[float] = None   # Budget!L — leverancier-resolved prijs per eenheid
     totaal: Optional[float] = None  # Budget!M — Budget's own ROUND(L,2)*ROUND(K,2)
-    group_totaal: Optional[float] = None  # parent group row's Budget!M, see _budget_group_totaal
 
 
 def _budget_prijs_totaal(row) -> tuple:
@@ -349,51 +348,40 @@ def _budget_code_totals(bdf: pd.DataFrame, row_start: int, row_end: int) -> Dict
     return totals
 
 
-_NUM_STRIP_RE = re.compile(r"\d+")
 
 
-def _strip_numbers(s: Optional[str]) -> str:
-    return _NUM_STRIP_RE.sub("", s or "").lower().strip()
-
-
-def _budget_group_totaal(code: Optional[str], desc: Optional[str], code_totals: Dict[str, tuple]) -> Optional[float]:
-    """A Budget leaf row (e.g. 'C.04.04.01 0470 Gas Cooler ...') can be one
-    of several mutually-exclusive capacity/size variants under a parent
-    group row (e.g. 'C.04.04 Gascooler') that sums whichever variant(s) were
-    actually selected. When the offerte's quoted variant wasn't the one
-    chosen in the IB (its own Budget aantal/totaal is 0), the parent group's
-    Totaal is the figure that reflects what was actually booked for this
-    position — e.g. IB chose '0500 Gas Cooler ... 181kW' instead of the
-    offerte's '0470 ... 133kW', so the '0470' leaf shows Totaal 0 while the
-    'Gascooler' group (which sums the selected gas cooler variant + its
-    selected bypass valve) shows the real 26,564.
-
-    Not every parent code is a variant-family, though — e.g. 'C.05.01
-    Installation piping system components' bundles many unrelated line
-    items (pipe runs, line-up connections, ...) rather than alternatives of
-    the same thing, and blindly using its Totaal would massively overstate
-    a single leaf. Guard against that by requiring at least one selected
-    sibling under the same parent whose description (with digits stripped,
-    so '133kW'/'181kW' don't matter) is a strong text match for this leaf's
-    own description — i.e. genuinely the same product, just a different
-    size/capacity."""
-    if not code or "." not in code or not desc or not HAS_RAPIDFUZZ:
+def _find_alt_budget_row(
+    bdf: pd.DataFrame, row_start: int, row_end: int, desc: Optional[str],
+    used_rows: set, threshold: int = 55,
+) -> Optional[BudgetLink]:
+    """Fail-safe for build_budget_link: the numeric-suffix join can land on a
+    Budget row IB didn't actually select (e.g. offerte quotes 'Bypass valve
+    5' but IB's own aantal is on the 'Bypass valve 4' row instead — a
+    different, similarly-described variant), which shows up as that link's
+    aantal being blank/0. Fall back to the closest text match, among Budget
+    rows not already claimed by another link, that does carry a real aantal."""
+    if not desc:
         return None
-    parent = code.rsplit(".", 1)[0]
-    parent_entry = code_totals.get(parent)
-    if not parent_entry or not parent_entry[2]:
-        return None
-    leaf_key = _strip_numbers(desc)
-    prefix = parent + "."
-    depth = code.count(".")
-    for sib_code, (sib_desc, _sib_aantal, sib_totaal) in code_totals.items():
-        if sib_code == code or not sib_code.startswith(prefix) or sib_code.count(".") != depth:
+    target = _norm_text(desc)
+    best, best_score = None, threshold
+    for r in range(row_start, row_end + 1):
+        if r in used_rows:
             continue
-        if not sib_totaal or not sib_desc:
+        result = _budget_row(bdf, r)
+        if result is None:
             continue
-        if fuzz.token_set_ratio(leaf_key, _strip_numbers(sib_desc)) >= 70:
-            return parent_entry[2]
-    return None
+        cdesc, aantal, row = result
+        if not aantal:
+            continue
+        score = fuzz.token_set_ratio(target, _norm_text(cdesc))
+        if score > best_score:
+            prijs, totaal = _budget_prijs_totaal(row)
+            best_score = score
+            best = BudgetLink(
+                budget_row=r, code=row.iloc[6] if len(row) > 6 else None,
+                omschrijving=cdesc, aantal=aantal, prijs=prijs, totaal=totaal,
+            )
+    return best
 
 
 def build_budget_link(
@@ -416,10 +404,10 @@ def build_budget_link(
         m = _ART_SUFFIX_RE.search(item.art_nr_jumbo)
         if m:
             suffix_to_row[m.group(1).zfill(4)] = item.row
-
-    code_totals = _budget_code_totals(bdf, row_start, row_end)
+    ib_by_row = {item.row: item for item in ib_items}
 
     links: Dict[int, BudgetLink] = {}
+    used_budget_rows: set = set()
     for r in range(row_start, row_end + 1):
         result = _budget_row(bdf, r)
         if result is None:
@@ -432,12 +420,27 @@ def build_budget_link(
         if ib_row is None:
             continue
         prijs, totaal = _budget_prijs_totaal(row)
-        code = row.iloc[6] if len(row) > 6 else None
-        group_totaal = _budget_group_totaal(code, desc, code_totals) if not totaal else None
         links[ib_row] = BudgetLink(
-            budget_row=r, code=code, omschrijving=desc, aantal=aantal,
-            prijs=prijs, totaal=totaal, group_totaal=group_totaal,
+            budget_row=r, code=row.iloc[6] if len(row) > 6 else None,
+            omschrijving=desc, aantal=aantal, prijs=prijs, totaal=totaal,
         )
+        used_budget_rows.add(r)
+
+    if HAS_RAPIDFUZZ:
+        for ib_row, link in list(links.items()):
+            if link.aantal:
+                continue
+            ib_item = ib_by_row.get(ib_row)
+            alt = _find_alt_budget_row(
+                bdf, row_start, row_end,
+                ib_item.omschrijving if ib_item else link.omschrijving,
+                used_budget_rows,
+            )
+            if alt is not None:
+                used_budget_rows.discard(link.budget_row)
+                used_budget_rows.add(alt.budget_row)
+                links[ib_row] = alt
+
     return links
 
 
@@ -562,6 +565,78 @@ def build_buffetten_link(bdf: Optional[pd.DataFrame], offerte: List[OfferteItem]
                     break
 
     return links
+
+
+#: Budget-sheet subheading rows (the C.0X.0Y "group" level, e.g. 'C.04.04
+#: Gascooler') span this range across both the koelbuffetten and koeling
+#: sections — see load_categorie_budget_codes.
+CATEGORIE_BUDGET_ROW_START = 1442
+CATEGORIE_BUDGET_ROW_END = 1716
+
+
+def load_categorie_budget_codes() -> Dict[str, List[tuple]]:
+    """Read data/koeling_categorie_budget_codes.csv: offerte Categorie label
+    -> [(budget_code, budget_omschrijving), ...]. Each budget_code is a
+    Budget!G outline code (e.g. 'C.04.04') for a subheading row whose own
+    Totaal (col M) already sums whichever child variant was actually
+    selected — the figure that should represent that category's IB total,
+    not a per-offerte-row rollup that can read 0 when IB chose a different
+    variant than the offerte quoted (see build_categorie_totalen).
+
+    Keyed by the Budget outline *code*, not a row number, so this keeps
+    working if rows shift when the workbook is edited — build_categorie_totalen
+    looks the code up fresh in the current sheet each run. budget_omschrijving
+    is kept as a documentation/fallback aid: if a code is ever renumbered,
+    matching by its still-recognizable description keeps the lookup working
+    without needing to update this file."""
+    path = ART_NR_MAPPING_DIR / "koeling_categorie_budget_codes.csv"
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    mapping: Dict[str, List[tuple]] = {}
+    for _, row in df.iterrows():
+        categorie = str(row["categorie"]).strip()
+        code = str(row["budget_code"]).strip()
+        omschrijving = row.get("budget_omschrijving")
+        omschrijving = str(omschrijving).strip() if pd.notna(omschrijving) else None
+        mapping.setdefault(categorie, []).append((code, omschrijving))
+    return mapping
+
+
+def build_categorie_totalen(
+    bdf: Optional[pd.DataFrame], mapping: Dict[str, List[tuple]],
+    row_start: int = CATEGORIE_BUDGET_ROW_START, row_end: int = CATEGORIE_BUDGET_ROW_END,
+) -> Dict[str, float]:
+    """Sum each offerte Categorie's own Budget subheading Totaal(s) directly
+    — e.g. 'Categorie gascoolers' -> Budget!C.04.04's own Totaal (26,564.64),
+    which already reflects whichever variant was actually selected — instead
+    of the per-offerte-row rollup in build_installatie_df, which reads 0 for
+    a specific variant the offerte quoted but IB ended up not choosing.
+    Categories with no entry in `mapping` are simply absent from the result,
+    so callers should fall back to the per-row rollup for those."""
+    if bdf is None or not mapping:
+        return {}
+    code_totals = _budget_code_totals(bdf, row_start, row_end)
+    desc_totals: Dict[str, float] = {}
+    for desc, _aantal, totaal in code_totals.values():
+        if desc and totaal:
+            desc_totals[desc] = totaal
+
+    result: Dict[str, float] = {}
+    for categorie, entries in mapping.items():
+        total = 0.0
+        found = False
+        for code, omschrijving in entries:
+            entry = code_totals.get(code)
+            totaal = entry[2] if entry else None
+            if not totaal and omschrijving:
+                totaal = desc_totals.get(omschrijving)
+            if totaal:
+                total += totaal
+                found = True
+        if found:
+            result[categorie] = total
+    return result
 
 
 def _norm_text(s) -> str:
@@ -760,13 +835,12 @@ def build_installatie_df(
         # Budget's own aantal) — the actual figure booked in the Budget tab
         # for this line, not a recomputation with the offerte's aantal. When
         # the offerte's quoted variant isn't the one IB actually chose (this
-        # leaf's own Totaal is 0), fall back to the parent group's Totaal —
-        # see _budget_group_totaal — so the category rollup still reflects
-        # what was really booked instead of silently showing 0.
-        if active_link and active_link.totaal:
+        # leaf's own Totaal is 0), this row-level figure understates the
+        # category — the page's "Totaal per categorie" table corrects for
+        # that separately via build_categorie_totalen, which reads the
+        # Budget subheading's own Totaal instead of rolling up leaf rows.
+        if active_link and active_link.totaal is not None:
             ib_totaal = active_link.totaal
-        elif active_link and active_link.group_totaal is not None:
-            ib_totaal = active_link.group_totaal
         else:
             ib_totaal = (prijs_i or 0) * aantal_o if (aantal_o and prijs_i is not None) else None
 

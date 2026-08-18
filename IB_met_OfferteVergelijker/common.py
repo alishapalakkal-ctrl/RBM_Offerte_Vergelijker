@@ -8,6 +8,9 @@ import streamlit as st
 ASSETS_DIR = Path(__file__).parent / "assets"
 LOGO_PATH = ASSETS_DIR / "jumbo_logo.png"
 VAN_KEULEN_ICON = ASSETS_DIR / "vankeulen_icon.png"
+AANNEMER_ICON = ASSETS_DIR / "Van Wijnen.png"
+KOELING_ICON = ASSETS_DIR / "Frimex.png"
+SLOOPWERK_ICON = ASSETS_DIR / "fried-van-de-laar.png"
 
 
 def _data_uri(path: Path) -> str:
@@ -70,3 +73,30 @@ def jumbo_header(icon, title: str, subtitle: str):
 
 def back_to_overview():
     st.page_link("Home.py", label="Terug naar overzicht", icon="⬅️")
+
+
+def leverancier_icon(path: Path, height: int = 100):
+    """Render a leverancier logo at a fixed height regardless of its source
+    aspect ratio — plain st.image(..., width=N) renders non-square source
+    images (e.g. vankeulen_icon.png at 148x119) shorter than square ones
+    (Frimex.png/Van Wijnen.png at 148x148), making Home.py's cards uneven
+    heights side by side."""
+    st.markdown(
+        f'<div style="height:{height}px; display:flex; align-items:center; justify-content:center;">'
+        f'<img src="{_data_uri(path)}" style="max-height:{height}px; max-width:100%; object-fit:contain;" />'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def card_caption(text: str, height: int = 40):
+    """Render Home.py's card caption at a fixed min-height — captions of
+    different lengths (e.g. Koeling's one-liner vs Aannemer's/Sloopwerk's
+    '(bijv. ...)' suffix) wrap to a different number of lines, which makes
+    st.container(border=True) cards uneven heights side by side even with
+    leverancier_icon() already normalizing the logo above them."""
+    st.markdown(
+        f'<div style="min-height:{height}px; font-size:0.875rem; color:rgb(120,120,120); '
+        f'line-height:1.3;">{text}</div>',
+        unsafe_allow_html=True,
+    )

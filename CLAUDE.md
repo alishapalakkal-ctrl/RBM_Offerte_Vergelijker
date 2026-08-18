@@ -38,6 +38,7 @@ No type checker is configured. After every change:
 - Domain terms stay in Dutch (offerte, aantal, prijs, omschrijving, leverancier) even though identifiers/code are English — match existing naming rather than translating.
 - Row-level data is modeled with `@dataclass` (e.g. `OfferteItem`, `IBItem`), not raw dicts/tuples.
 - Supplier-specific quirks (e.g. hardcoded article-number mappings) belong in `IB_met_OfferteVergelijker/data/*.csv`, not inline in page code.
+- On every results page, the first `st.tabs(...)` entry is always "📊 Samenvatting" — that's the tab a user should land on right after clicking Analyseren, since Streamlit always shows the first tab passed to `st.tabs` as the default. Other tabs (Alle resultaten, Te controleren/Fuzzy matches, Export) follow after it.
 
 ## Don't
 - Don't assume offerte and IB budget share an article number — confirm the matching strategy (exact/manual/fuzzy) per leverancier before writing comparison logic.
