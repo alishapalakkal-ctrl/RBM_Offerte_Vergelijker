@@ -21,18 +21,31 @@ from typing import Dict, List, Optional
 import pandas as pd
 import pdfplumber
 
-from matching_koeling import HAS_RAPIDFUZZ, _budget_prijs_totaal, _budget_row, _norm_text, load_budget_df
+from matching_koeling import (
+    HAS_RAPIDFUZZ,
+    _budget_code_totals,
+    _budget_prijs_totaal,
+    _budget_row,
+    _norm_text,
+    build_categorie_totalen,
+    load_budget_df,
+)
 
 if HAS_RAPIDFUZZ:
     from rapidfuzz import fuzz
 
 __all__ = [
     "HAS_RAPIDFUZZ",
+    "BUDGET_AANNEMER_VANWIJNEN_ROW_END",
+    "BUDGET_AANNEMER_VANWIJNEN_ROW_START",
     "BudgetMatch",
     "OfferteItem",
     "build_aannemer_df",
+    "build_categorie_totalen",
+    "get_aannemer_totaal_ib",
     "load_art_nr_mapping",
     "load_budget_df",
+    "load_categorie_budget_codes",
     "match_aannemer_budget",
     "parse_pdf",
 ]
@@ -76,8 +89,38 @@ class BudgetMatch:
 #: Budget-sheet rows covering the Aannemer (Van Wijnen) 'A.02' section.
 #: Baked-in leverancier name since "Aannemer" is a role, not one supplier —
 #: the IB workbook also has an 'Aannemer van de Laar' sheet for another one.
+#: Row 273 (the range's own start row) is the 'A.02 Aannemerswerk' section
+#: header itself — its own Totaal is the authoritative whole-section IB
+#: figure (see get_aannemer_totaal_ib), since summing the per-Pos categorie
+#: rollup misses budget-only subheadings that have no offerte Pos at all
+#: (Reiskosten, Overig).
 BUDGET_AANNEMER_VANWIJNEN_ROW_START = 273
 BUDGET_AANNEMER_VANWIJNEN_ROW_END = 456
+
+
+def get_aannemer_totaal_ib(
+    bdf: Optional[pd.DataFrame],
+    row_start: int = BUDGET_AANNEMER_VANWIJNEN_ROW_START, row_end: int = BUDGET_AANNEMER_VANWIJNEN_ROW_END,
+) -> Optional[float]:
+    """Sum every A.02.0X subheading's own Totaal directly (Kozijnen, Wanden,
+    ... Reiskosten, Overig — all 12, not just the ones with a matching
+    offerte Pos) — the whole-section IB figure for the Samenvatting's top
+    'Totaal IB' KPI, independent of build_categorie_totalen's per-Pos
+    rollup below (which only covers categories the offerte itself quotes).
+    Equals the 'A.02 Aannemerswerk' row's own Totaal, computed explicitly
+    from its children rather than trusting that single cell."""
+    if bdf is None:
+        return None
+    code_totals = _budget_code_totals(bdf, row_start, row_end)
+    total = 0.0
+    found = False
+    for code, (_desc, _aantal, totaal) in code_totals.items():
+        if not isinstance(code, str) or not code.startswith("A.02.") or code.count(".") != 2:
+            continue
+        if totaal:
+            total += totaal
+            found = True
+    return total if found else None
 
 
 _WS_RE = re.compile(r"\s+")
@@ -187,6 +230,28 @@ def load_art_nr_mapping(leverancier: str = "vanwijnen") -> Dict[str, str]:
         return {}
     df = pd.read_csv(path)
     return {str(row["art_nr"]).strip(): str(row["budget_omschrijving"]).strip() for _, row in df.iterrows()}
+
+
+def load_categorie_budget_codes() -> Dict[str, List[tuple]]:
+    """Read data/Aanemer_categorie_budget_codes.csv: offerte 'Pos N ...' label
+    -> [(budget_code, budget_omschrijving), ...]. Keyed by the offerte's own
+    raw Pos string (not a normalized/stripped label) so it matches
+    OfferteItem.pos verbatim — same convention as Koeling's
+    load_categorie_budget_codes, whose result feeds directly into
+    build_categorie_totalen (reused as-is, see matching_koeling.py — it's
+    already generic over the mapping/row range, no Koeling-specific logic)."""
+    path = ART_NR_MAPPING_DIR / "Aanemer_categorie_budget_codes.csv"
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    mapping: Dict[str, List[tuple]] = {}
+    for _, row in df.iterrows():
+        categorie = str(row["categorie"]).strip()
+        code = str(row["budget_code"]).strip()
+        omschrijving = row.get("budget_omschrijving")
+        omschrijving = str(omschrijving).strip() if pd.notna(omschrijving) else None
+        mapping.setdefault(categorie, []).append((code, omschrijving))
+    return mapping
 
 
 def match_aannemer_budget(

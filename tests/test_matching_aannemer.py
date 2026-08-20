@@ -7,6 +7,7 @@ from matching_aannemer import (
     OfferteItem,
     _dutch_number,
     build_aannemer_df,
+    get_aannemer_totaal_ib,
     match_aannemer_budget,
 )
 
@@ -59,6 +60,31 @@ def _budget_df(rows: dict) -> pd.DataFrame:
         data[r - 1][11] = prijs
         data[r - 1][12] = totaal
     return pd.DataFrame(data)
+
+
+# ─── whole-section IB total ──────────────────────────────────────────────────
+
+def test_get_aannemer_totaal_ib_matches_section_header_row():
+    # Budget's own 'A.02 Aannemerswerk' header row (dots==1) carries the
+    # section's grand total as its own Totaal — get_aannemer_totaal_ib sums
+    # the A.02.0X subheadings (dots==2) independently, so this checks the
+    # two stay equal, as they do in the real workbook (verified against
+    # JUMBO IB V.69 RBM_Leusden V3.xlsm: both read 95197.4292...).
+    header_totaal = 35254.82
+    bdf = _budget_df({
+        273: ("A.02", "Aannemerswerk", 0, None, header_totaal),
+        274: ("A.02.01", "Algemeen", 0, None, 24994.82),
+        283: ("A.02.02", "Reiskosten", 0, None, 10260.0),
+    })
+
+    summed = get_aannemer_totaal_ib(bdf, row_start=273, row_end=283)
+
+    assert summed == pytest.approx(24994.82 + 10260.0)
+    assert summed == pytest.approx(header_totaal)
+
+
+def test_get_aannemer_totaal_ib_none_bdf_returns_none():
+    assert get_aannemer_totaal_ib(None) is None
 
 
 def test_match_aannemer_budget_none_bdf_returns_empty():

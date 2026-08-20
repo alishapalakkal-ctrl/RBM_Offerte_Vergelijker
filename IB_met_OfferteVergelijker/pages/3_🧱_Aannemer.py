@@ -16,10 +16,15 @@ import streamlit as st
 
 from common import AANNEMER_ICON, back_to_overview, configure_page, inject_base_style, jumbo_header
 from matching_aannemer import (
+    BUDGET_AANNEMER_VANWIJNEN_ROW_END,
+    BUDGET_AANNEMER_VANWIJNEN_ROW_START,
     HAS_RAPIDFUZZ,
     build_aannemer_df,
+    build_categorie_totalen,
+    get_aannemer_totaal_ib,
     load_art_nr_mapping,
     load_budget_df,
+    load_categorie_budget_codes,
     match_aannemer_budget,
     parse_pdf,
 )
@@ -73,12 +78,21 @@ def _analyze_aannemer(ib_file, pdf_file):
         bdf = load_budget_df(ib_bytes)
         matches = match_aannemer_budget(offerte, bdf, mapping)
         df = build_aannemer_df(offerte, matches)
+        categorie_mapping = load_categorie_budget_codes()
+        categorie_totalen = build_categorie_totalen(
+            bdf, categorie_mapping,
+            row_start=BUDGET_AANNEMER_VANWIJNEN_ROW_START, row_end=BUDGET_AANNEMER_VANWIJNEN_ROW_END,
+        )
+        totaal_ib_row = get_aannemer_totaal_ib(bdf)
 
     st.session_state.aannemer_df = df
+    st.session_state.aannemer_categorie_totalen = categorie_totalen
+    st.session_state.aannemer_totaal_ib_row = totaal_ib_row
     st.rerun()
 
 
-def _show_aannemer_results(df: pd.DataFrame):
+def _show_aannemer_results(df: pd.DataFrame, categorie_totalen=None, totaal_ib_row=None):
+    categorie_totalen = categorie_totalen or {}
     df = df[df["Offerte Aantal"].notna()].reset_index(drop=True)
     nrfp_df = df[df["Pos"] == "NRFP"]
     df = df[df["Pos"] != "NRFP"].reset_index(drop=True)
@@ -106,14 +120,41 @@ def _show_aannemer_results(df: pd.DataFrame):
 
     with tab_sam:
         offerte_totaal = float(df["_offerte_totaal"].sum(skipna=True))
-        ib_totaal = float(df["_ib_totaal"].sum(skipna=True))
+
+        # cat_df is built once, up front, and reused for the top "Totaal IB"
+        # KPI as well as the categorie table below — its "Totaal IB" prefers
+        # the Budget subheading's own Totaal (via categorie_totalen) over the
+        # per-row rollup, which is the more realistic figure: the per-row
+        # rollup reads 0/blank for a variant the offerte quoted but IB ended
+        # up not selecting. Same convention as Koeling's Samenvatting tab.
+        cat_df = (
+            df.groupby("Pos", dropna=False)[["_offerte_totaal", "_ib_totaal"]]
+            .sum(min_count=1)
+            .reset_index()
+            .rename(columns={"Pos": "Categorie", "_offerte_totaal": "Totaal Offerte", "_ib_totaal": "Totaal IB"})
+        )
+        if categorie_totalen:
+            cat_df["Totaal IB"] = cat_df.apply(
+                lambda r: categorie_totalen.get(r["Categorie"], r["Totaal IB"]), axis=1
+            )
+        cat_df["Verschil"] = cat_df["Totaal Offerte"] - cat_df["Totaal IB"]
+        cat_df = cat_df.sort_values("Totaal Offerte", ascending=False, na_position="last")
+
+        # Sum of every A.02.0X subheading's own Totaal on the Budget sheet
+        # (all 12 — including Reiskosten/Overig, which have no matching
+        # offerte Pos and are therefore invisible to the per-categorie
+        # rollup below). Falls back to that rollup only if the Budget sheet
+        # itself couldn't be read.
+        ib_totaal = totaal_ib_row if totaal_ib_row is not None else float(cat_df["Totaal IB"].sum(skipna=True))
         diff = offerte_totaal - ib_totaal
         diff_pct = diff / ib_totaal * 100 if ib_totaal else 0
 
         k1, k2, k3 = st.columns(3)
         k1.metric("Totaal Offerte", f"€ {offerte_totaal:,.2f}",
                    help="Prijs per eenheid (arbeid & materiaal) × Offerte Aantal, alleen regels met een ingevuld aantal")
-        k2.metric("Totaal IB", f"€ {ib_totaal:,.2f}", help="IB Prijs p.e. × Offerte Aantal, voor dezelfde regels")
+        k2.metric("Totaal IB", f"€ {ib_totaal:,.2f}",
+                   help="Som van alle A.02.0X subtotalen op het Budget-tabblad — inclusief subtotalen "
+                        "zonder eigen offerte-Pos (bijv. Reiskosten, Overig)")
         diff_label = f"{'▲' if diff > 0 else '▼'} € {abs(diff):,.2f}  ({diff_pct:+.1f}%)"
         k3.metric("Verschil", diff_label, delta_color="inverse" if diff > 0 else "normal")
 
@@ -132,9 +173,31 @@ def _show_aannemer_results(df: pd.DataFrame):
 
         st.divider()
 
-        st.info(
-            "📊 Totaal per categorie (Pos 1-10) volgt zodra de koppeling tussen de offerte's Pos-categorieën "
-            "en de bijbehorende Budget-subtotalen (A.02.xx) is bevestigd."
+        st.subheader("Totaal per categorie")
+        st.caption(
+            "Totaal IB komt, waar bekend, rechtstreeks uit de bijbehorende subtotaal-regel op het "
+            "Budget-tabblad (bijv. 'Wanden') — dat blijft correct ook als IB een andere variant heeft "
+            "gekozen dan de offerte, zie data/Aanemer_categorie_budget_codes.csv."
+        )
+        cat_df = (
+            df.groupby("Pos", dropna=False)[["_offerte_totaal", "_ib_totaal"]]
+            .sum(min_count=1)
+            .reset_index()
+            .rename(columns={"Pos": "Categorie", "_offerte_totaal": "Totaal Offerte", "_ib_totaal": "Totaal IB"})
+        )
+        if categorie_totalen:
+            cat_df["Totaal IB"] = cat_df.apply(
+                lambda r: categorie_totalen.get(r["Categorie"], r["Totaal IB"]), axis=1
+            )
+        cat_df["Verschil"] = cat_df["Totaal Offerte"] - cat_df["Totaal IB"]
+        cat_df = cat_df.sort_values("Totaal Offerte", ascending=False, na_position="last")
+        st.dataframe(
+            cat_df.style.format({
+                "Totaal Offerte": lambda x: f"€ {x:,.2f}" if pd.notna(x) else "",
+                "Totaal IB": lambda x: f"€ {x:,.2f}" if pd.notna(x) else "",
+                "Verschil": lambda x: f"€ {x:,.2f}" if pd.notna(x) else "",
+            }),
+            use_container_width=True, hide_index=True,
         )
 
         st.divider()
@@ -178,6 +241,8 @@ if not HAS_RAPIDFUZZ:
 
 if "aannemer_df" not in st.session_state:
     st.session_state.aannemer_df = None
+    st.session_state.aannemer_categorie_totalen = {}
+    st.session_state.aannemer_totaal_ib_row = None
 
 with st.sidebar:
     st.header("📂 Bestanden uploaden")
@@ -202,4 +267,8 @@ with st.sidebar:
 if st.session_state.aannemer_df is None:
     st.info("Upload beide bestanden via de zijbalk en klik op **Analyseren** om te beginnen.")
 else:
-    _show_aannemer_results(st.session_state.aannemer_df)
+    _show_aannemer_results(
+        st.session_state.aannemer_df,
+        st.session_state.aannemer_categorie_totalen,
+        st.session_state.aannemer_totaal_ib_row,
+    )

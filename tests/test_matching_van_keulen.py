@@ -10,6 +10,7 @@ from matching_van_keulen import (
     HAS_RAPIDFUZZ,
     _dutch,
     _skip,
+    apply_art_nr_mapping,
     build_matches,
     read_budget_summary_rows,
     read_ib_items,
@@ -43,6 +44,57 @@ def test_skip_filters_boilerplate_lines():
     assert _skip("Van Keulen BV") is True
     assert _skip("1234 AB Amsterdam") is True
     assert _skip("Een normale offerteregel") is False
+
+
+# ─── art.nr. mapping (Budget column BA backfill) ────────────────────────────
+
+def test_apply_art_nr_mapping_single_candidate_always_applied():
+    ii = _ib_item(description="Deurpaneel wit", pdf_art_nr="")
+    mapping = {"deurpaneel wit": ["12345"]}
+
+    filled = apply_art_nr_mapping([ii], mapping)
+
+    assert filled == 1
+    assert ii.pdf_art_nr == "12345"
+
+
+def test_apply_art_nr_mapping_multi_candidate_resolved_by_pdf_art_nrs():
+    # 'wandstelling...' is reused across 3 real Budget rows, each a
+    # different size variant with its own Art.nr. — only the one that
+    # actually appears in this offerte's own PDF should be applied.
+    ii = _ib_item(description="Wandstelling 1400mm, voet 560mm, schappen 560mm", pdf_art_nr="")
+    mapping = {"wandstelling 1400mm voet 560mm schappen 560mm": ["279738", "279739", "279740"]}
+
+    filled = apply_art_nr_mapping([ii], mapping, pdf_art_nrs={"279739"})
+
+    assert filled == 1
+    assert ii.pdf_art_nr == "279739"
+
+
+def test_apply_art_nr_mapping_multi_candidate_left_unresolved_when_ambiguous():
+    ii = _ib_item(description="Wandstelling 1400mm, voet 560mm, schappen 560mm", pdf_art_nr="")
+    mapping = {"wandstelling 1400mm voet 560mm schappen 560mm": ["279738", "279739", "279740"]}
+
+    # None of the offerte's own art.nrs are among the candidates.
+    filled = apply_art_nr_mapping([ii], mapping, pdf_art_nrs={"999999"})
+    assert filled == 0
+    assert ii.pdf_art_nr == ""
+
+    # More than one candidate present — still ambiguous, can't tell which
+    # Budget row this is.
+    filled = apply_art_nr_mapping([ii], mapping, pdf_art_nrs={"279738", "279740"})
+    assert filled == 0
+    assert ii.pdf_art_nr == ""
+
+
+def test_apply_art_nr_mapping_skips_rows_with_existing_pdf_art_nr():
+    ii = _ib_item(description="Deurpaneel wit", pdf_art_nr="already-set")
+    mapping = {"deurpaneel wit": ["12345"]}
+
+    filled = apply_art_nr_mapping([ii], mapping)
+
+    assert filled == 0
+    assert ii.pdf_art_nr == "already-set"
 
 
 # ─── matching ────────────────────────────────────────────────────────────────

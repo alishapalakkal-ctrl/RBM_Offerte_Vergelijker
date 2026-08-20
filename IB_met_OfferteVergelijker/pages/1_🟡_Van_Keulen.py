@@ -18,7 +18,9 @@ try:
     from matching_van_keulen import (
         IBItem,
         HAS_RAPIDFUZZ,
+        apply_art_nr_mapping,
         build_matches,
+        load_art_nr_mapping,
         parse_pdf,
         read_budget_summary_rows,
         read_ib_items,
@@ -156,6 +158,8 @@ def main():
         st.session_state.lamellen_excluded = []
         st.session_state.raw_pdf_total    = 0.0
         st.session_state.raw_pdf_count    = 0
+        st.session_state.mapping_filled   = 0
+        st.session_state.mapping_size     = 0
 
     # ── Run ────────────────────────────────────────────────────────────────────
     if run:
@@ -166,6 +170,12 @@ def main():
 
     # ── Display ────────────────────────────────────────────────────────────────
     if st.session_state.df is not None:
+        if st.session_state.mapping_filled:
+            st.caption(
+                f"ℹ️ {st.session_state.mapping_filled} IB-regel(s) automatisch gekoppeld via het "
+                f"bijgehouden mapping-bestand (van {st.session_state.mapping_size} bekende omschrijvingen) "
+                "— kolom BA had voor deze regels geen Art.nr."
+            )
         _show_results(st.session_state.df, st.session_state.budget_summary, st.session_state.lamellen_excluded)
     else:
         st.info("Upload bestanden via de zijbalk en klik op **Analyseren** om te beginnen.")
@@ -190,9 +200,12 @@ def _run_analysis(pdf_file, netto_file, budget_file):
     budget_summary: List[dict] = []
     lamellen_excluded: List[dict] = []
     ib_row_override: Dict[str, IBItem] = {}
+    art_nr_mapping = load_art_nr_mapping()
+    mapping_filled = 0
     if budget_file:
         budget_bytes = budget_file.read()
         ib_items       = read_ib_items(io.BytesIO(budget_bytes))
+        mapping_filled = apply_art_nr_mapping(ib_items, art_nr_mapping, {p.art_nr for p in pdf_items})
         budget_summary, lamellen_excluded = read_budget_summary_rows(io.BytesIO(budget_bytes), 1986, 2763)
         ib_row_override = read_ib_row_overrides(io.BytesIO(budget_bytes))
 
@@ -206,6 +219,8 @@ def _run_analysis(pdf_file, netto_file, budget_file):
     st.session_state.lamellen_excluded = lamellen_excluded
     st.session_state.raw_pdf_total     = sum(item.total for item in pdf_items)
     st.session_state.raw_pdf_count     = len(pdf_items)
+    st.session_state.mapping_filled    = mapping_filled
+    st.session_state.mapping_size      = len(art_nr_mapping)
     bar.progress(100, "Klaar!")
     bar.empty()
     st.rerun()

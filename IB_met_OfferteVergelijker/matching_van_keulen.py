@@ -7,10 +7,13 @@ st.set_page_config()/main() at import time.
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
 import pdfplumber
+
+from matching_koeling import _norm_text
 
 try:
     from rapidfuzz import fuzz, process as rfprocess
@@ -263,6 +266,71 @@ def read_ib_row_overrides(src, mapping: Dict[str, int] = IB_ROW_OVERRIDE) -> Dic
             quantity=qty, price=price, pdf_art_nr=art_nr, row=row_nr,
         )
     return result
+
+
+#: Persistent IB-omschrijving -> Art.nr. (Budget column BA) lookup,
+#: hand-maintained as matches get manually confirmed over time. Used as a
+#: fallback when a Budget row's own column BA is blank, so the PDF's Art.nr.
+#: can still exact-match that row instead of relying on fuzzy description
+#: matching (or missing the IB row entirely) — same role as Koeling's
+#: omschrijving -> art_nr mapping, just backfilling the IB side's own
+#: identifier instead of the offerte side's.
+ART_NR_MAPPING_DIR = Path(__file__).parent / "data"
+
+
+def load_art_nr_mapping() -> Dict[str, List[str]]:
+    """omschrijving -> [art_nr, ...]. Usually a single candidate, but some
+    generic descriptions (e.g. 'wandstelling 1400mm, voet 560mm, schappen
+    560mm') are reused across several real Budget rows that each carry a
+    different Art.nr. for a different size/variant — those keep all of
+    their candidates here so apply_art_nr_mapping can pick the one that
+    actually appears in the offerte, instead of guessing."""
+    path = ART_NR_MAPPING_DIR / "van_keulen_art_nr_mapping.csv"
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    mapping: Dict[str, List[str]] = {}
+    for _, row in df.iterrows():
+        key = _norm_text(row["omschrijving"])
+        art_nr = str(row["art_nr"]).strip()
+        candidates = mapping.setdefault(key, [])
+        if art_nr not in candidates:
+            candidates.append(art_nr)
+    return mapping
+
+
+def apply_art_nr_mapping(
+    ib_items: List[IBItem], mapping: Dict[str, List[str]], pdf_art_nrs: Optional[set] = None,
+) -> int:
+    """Fill in pdf_art_nr from the external mapping for IB Budget rows whose
+    own column BA is blank (the offerte's own Art.nr. always takes priority
+    when column BA has it — this only backfills what's otherwise missing).
+
+    A description with a single mapped candidate is always applied. A
+    description with several candidates (see load_art_nr_mapping) is only
+    applied when exactly one of them is present in `pdf_art_nrs` (the
+    current offerte's own Art.nr. values) — with 0 or >1 matches there's no
+    way to tell which variant this row is, so it's left unresolved rather
+    than guessed. Returns how many rows got filled in this way."""
+    if not mapping:
+        return 0
+    pdf_art_nrs = pdf_art_nrs or set()
+    filled = 0
+    for ii in ib_items:
+        if ii.pdf_art_nr:
+            continue
+        candidates = mapping.get(_norm_text(ii.description))
+        if not candidates:
+            continue
+        if len(candidates) == 1:
+            ii.pdf_art_nr = candidates[0]
+            filled += 1
+            continue
+        present = [c for c in candidates if c in pdf_art_nrs]
+        if len(present) == 1:
+            ii.pdf_art_nr = present[0]
+            filled += 1
+    return filled
 
 
 # ─── Matcher ───────────────────────────────────────────────────────────────────
