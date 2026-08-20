@@ -1,6 +1,6 @@
 streamlit>=1.35,<1.50
 streamlit-pdf-viewer>=0.0.20
-altair>=5.0
+altair>=5.0,<7.0
 pdfplumber>=0.11
 pandas>=2.1
 openpyxl>=3.1
