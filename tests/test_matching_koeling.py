@@ -98,6 +98,19 @@ def test_parse_offerte_reads_items_and_manual_code():
     assert item.art_manual == "470"  # numeric cell stringified
 
 
+def test_parse_offerte_reads_aantal_in_normwinkel_header():
+    rows = [
+        ["Categorie koelcellen", "Omschrijving Item", "Eenheid", "Prijs materiaal per eenheid",
+         "Arbeidskosten per eenheid", "Aantal in normwinkel"],
+        [None, "Verdamper koelcel 3000 W CO₂", "stuks", 900.0, 56.0, 2],
+    ]
+    items = parse_offerte(_xlsx_bytes("Bidsheet K", rows), "Bidsheet K")
+
+    assert len(items) == 1
+    assert items[0].categorie == "Categorie koelcellen"
+    assert items[0].aantal == 2
+
+
 def test_parse_ib_skips_nrfp_rows():
     rows = [
         ["Art.Nr.Jumbo", "Manual nr.", "Art.Nr.Leverancier", "Groep", "Omschrijving Item", "Eenheid", "Aantal",

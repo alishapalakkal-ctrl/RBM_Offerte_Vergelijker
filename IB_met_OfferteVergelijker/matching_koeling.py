@@ -75,7 +75,8 @@ _OFFERTE_KEYS = {
     "eenheid": {"eenheid"},
     "prijs_materiaal": {"prijsmateriaalpereenheid"},
     "arbeid": {"arbeidskostenpereenheid"},
-    "aantal": {"aantal"},
+    # 'Aantal in normwinkel' — newer bidsheets (e.g. Carrier's 'Bidsheet K')
+    "aantal": {"aantal", "aantalinnormwinkel"},
     "art_manual": {"artnrjumbo", "artjumbo", "artnrjumbomanual"},
 }
 
