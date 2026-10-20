@@ -13,6 +13,9 @@ from matching_koeling import (
     _norm_code,
     _normalize_jum_ko_code,
     _parse_buffet_manual_code,
+    _parse_nrfp_rows,
+    _parse_offerte_rows,
+    _pdf_cell,
     _stringify_manual_code,
     apply_art_nr_mapping,
     build_budget_link,
@@ -450,3 +453,53 @@ def test_guess_leverancier_from_filename():
     assert guess_leverancier("21011533 0.1 Jumbo Eibergen, Frimex KT bidsheet.xlsx") == "Frimex"
     assert guess_leverancier("Installatie bidsheet KT HVAC en W - CCR  Jumbo Eibergen.xlsx") == "Carrier"
     assert guess_leverancier("Offerte Koeltechniek Jansen.xlsx") == "Offerte Koeltechniek Jansen"
+
+
+# ─── PDF bidsheets ──────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("raw, expected", [
+    ("€ 1 2.463,15", 12463.15),   # stray spaces inside the digits
+    ("€ 7 ,31", 7.31),
+    ("1 20", 120.0),              # aantal
+    ("2", 2.0),
+    ("€ -", 0.0),
+    ("-", 0.0),
+    ("", None),
+    (None, None),
+    ("Verdamper koelcel 1000 W CO₂", "Verdamper koelcel 1000 W CO₂"),
+    ("st", "st"),
+])
+def test_pdf_cell_converts_dutch_amounts(raw, expected):
+    assert _pdf_cell(raw) == expected
+
+
+def test_pdf_rows_parse_like_excel_and_stop_at_nrfp_page():
+    raw = [
+        ["Leverancier", "Frimex Installatie B.V."],
+        ["Categorie koelcellen", "Omschrijving Item", "Eenheid", "Prijs materiaal\nper eenheid",
+         "Arbeidskosten\nper eenheid", "Netto netto prijs\nper eenheid\n(materiaal en\narbeid)", "Aantal",
+         "Totaalprijs\nwinkel in €", "Totaalprijs\ncategorie in €", "Opmerkingen"],
+        ["Verdamper koelcel", "Verdamper koelcel 3000 W CO₂", "st", "€ 1 .038,01", "€ 149,54", "€ 1 .187,55", "1",
+         "€ 1 .187,55", "", ""],
+        ["Celpanelen koelcel", "Celpanelen koelcel hoogte 2400mm", "m2", "€ 141,56", "€ -", "€ 141,56", "1 03",
+         "€ 1 4.580,37", "", ""],
+        # next page: the table continues without its own header row
+        ["Verdamper koelcel", "Verdamper koelcel 5000 W CO₂", "st", "€ 1 .269,97", "€ 149,54", "€ 1 .419,51", "",
+         "€ -", "", ""],
+        ["Positions not included in RFP", None, None, None, None],
+        ["", "Apparatuur/meubelen", "Prijs", "Aantal", "Totaal"],
+        ["NRFP 0010", "", "", "", "€ -"],
+        ["NRFP 0170", "Drukopnemers meerprijs", "€ 2.872,16", "1", "€ 2.872,16"],
+    ]
+    rows = [(i, [_pdf_cell(v) for v in r]) for i, r in enumerate(raw, 1)]
+
+    items = _parse_offerte_rows(rows)
+    assert [i.omschrijving for i in items] == [
+        "Verdamper koelcel 3000 W CO₂", "Celpanelen koelcel hoogte 2400mm", "Verdamper koelcel 5000 W CO₂"]
+    assert items[0].prijs_materiaal == pytest.approx(1038.01)
+    assert items[0].arbeid == pytest.approx(149.54)
+    assert items[1].aantal == 103.0
+    assert items[2].aantal is None
+
+    nrfp = _parse_nrfp_rows(rows)
+    assert [(n.code, n.totaal) for n in nrfp] == [("NRFP 0170", 2872.16)]

@@ -138,12 +138,62 @@ def _row_getter(header_map: Dict[str, int], row_vals: list):
     return get
 
 
+#: A Dutch-formatted amount as pdfplumber extracts it from a printed
+#: bidsheet: optional '€', thousands '.', decimal ',', and stray spaces
+#: inside the digits ('€ 1 2.463,15', '€ 7 ,31', aantal '1 20') — matched
+#: after removing all spaces.
+_PDF_NUM_RE = re.compile(r"^€?-?[\d.]*\d(,\d+)?$")
+
+
+def _pdf_cell(v):
+    """Turn one PDF table cell into what the Excel reader would give: None
+    for empty, a float for amounts/aantallen ('€ -' / '-' = 0), else the
+    stripped text."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    compact = s.replace(" ", "")
+    if compact in ("-", "€-"):
+        return 0.0
+    if _PDF_NUM_RE.match(compact):
+        return float(compact.replace("€", "").replace(".", "").replace(",", "."))
+    return s
+
+
+def _rows_from_pdf(file_bytes: bytes):
+    """Yield (row number, row values) for every table row of a PDF-printed
+    bidsheet, all pages chained — a categorie continuing on the next page
+    has no header row of its own there, so the parsers keep the previous
+    page's column mapping. Row numbers are just a running index."""
+    import pdfplumber
+
+    r = 0
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            for table in page.extract_tables():
+                for raw in table:
+                    r += 1
+                    yield r, [_pdf_cell(v) for v in raw]
+
+
 def parse_offerte(file_bytes: bytes, sheet_name: str) -> List[OfferteItem]:
+    return _parse_offerte_rows(_rows_from_bytes(file_bytes, sheet_name))
+
+
+def parse_offerte_pdf(file_bytes: bytes) -> List[OfferteItem]:
+    """Same as parse_offerte, for a bidsheet printed to PDF (e.g. Frimex
+    'Jumbo Hellevoetsluis KT bidsheet 2026.2.pdf')."""
+    return _parse_offerte_rows(_rows_from_pdf(file_bytes))
+
+
+def _parse_offerte_rows(rows) -> List[OfferteItem]:
     items: List[OfferteItem] = []
     category = None
     header_map: Dict[str, int] = {}
 
-    for r, row_vals in _rows_from_bytes(file_bytes, sheet_name):
+    for r, row_vals in rows:
         normed = [_nh(v) for v in row_vals]
 
         if "omschrijvingitem" in normed:
@@ -161,6 +211,12 @@ def parse_offerte(file_bytes: bytes, sheet_name: str) -> List[OfferteItem]:
         # 'Buiten RFP' lines are extra positions outside the tender, handled
         # like NRFP by parse_buiten_rfp — not part of any categorie.
         if _nh(c1) == "buitenrfp":
+            continue
+        # A PDF-printed bidsheet ends with the NRFP page ('Positions not
+        # included in RFP', parsed by _parse_nrfp_rows) — its rows aren't
+        # offerte lines, so drop the column mapping from here on.
+        if _nh(c1).startswith("positionsnotincludedinrfp"):
+            header_map = {}
             continue
 
         if "omschrijving" not in header_map:
@@ -255,26 +311,31 @@ def parse_nrfp(file_bytes: bytes, sheet_name: str = "NRFP") -> List[NrfpItem]:
     sum(item.totaal for item in parse_nrfp(...)) on top separately.
     """
     try:
-        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None, engine="openpyxl")
+        rows = list(_rows_from_bytes(file_bytes, sheet_name))
     except ValueError:
         return []
+    return _parse_nrfp_rows(rows)
 
+
+def _parse_nrfp_rows(rows) -> List[NrfpItem]:
+    """NRFP rows: code, omschrijving, prijs, aantal, totaal in the first five
+    columns — the same layout on the Excel NRFP sheet and the PDF's
+    'Positions not included in RFP' page."""
     items: List[NrfpItem] = []
-    for _, row in df.iterrows():
-        code = row.iloc[0] if len(row) > 0 else None
+    for _r, row in rows:
+        cell = lambda i: row[i] if len(row) > i else None  # noqa: E731
+        code = cell(0)
         if not isinstance(code, str) or not _NRFP_CODE_RE.match(code.strip()):
             continue
-        totaal = row.iloc[4] if len(row) > 4 else None
-        if not (isinstance(totaal, (int, float)) and pd.notna(totaal) and totaal):
+        totaal = cell(4)
+        if not (_is_num(totaal) and totaal):
             continue
-        omschrijving = row.iloc[1] if len(row) > 1 else None
-        prijs = row.iloc[2] if len(row) > 2 else None
-        aantal = row.iloc[3] if len(row) > 3 else None
+        omschrijving = cell(1)
         items.append(NrfpItem(
             code=code.strip(),
             omschrijving=str(omschrijving).strip() if isinstance(omschrijving, str) else None,
-            prijs=prijs if pd.notna(prijs) else None,
-            aantal=aantal if pd.notna(aantal) else None,
+            prijs=cell(2) if _is_num(cell(2)) else None,
+            aantal=cell(3) if _is_num(cell(3)) else None,
             totaal=float(totaal),
         ))
     return items
@@ -290,10 +351,14 @@ def parse_buiten_rfp(file_bytes: bytes, sheet_name: str) -> List[NrfpItem]:
     Aantal/Prijs), so each header row is merged into the mapping from the
     earlier full categorie headers instead of replacing it — the columns sit
     in the same position across the sheet."""
+    return _parse_buiten_rfp_rows(_rows_from_bytes(file_bytes, sheet_name))
+
+
+def _parse_buiten_rfp_rows(rows) -> List[NrfpItem]:
     items: List[NrfpItem] = []
     header_map: Dict[str, int] = {}
 
-    for _r, row_vals in _rows_from_bytes(file_bytes, sheet_name):
+    for _r, row_vals in rows:
         normed = [_nh(v) for v in row_vals]
         if "omschrijvingitem" in normed:
             header_map.update(_build_header_map(normed, _OFFERTE_KEYS))
@@ -319,6 +384,26 @@ def parse_buiten_rfp(file_bytes: bytes, sheet_name: str) -> List[NrfpItem]:
             prijs=prijs, aantal=aantal, totaal=float(prijs * aantal),
         ))
     return items
+
+
+def is_pdf(filename: str) -> bool:
+    return filename.lower().endswith(".pdf")
+
+
+def read_bidsheet(file_bytes: bytes, filename: str, sheet_name: Optional[str] = None) -> tuple:
+    """Read a Koel Installatie bidsheet, Excel or PDF, into (offerte items,
+    NRFP + Buiten RFP items). For Excel, `sheet_name` defaults to the first
+    pick_bid_sheet candidate; a PDF has no sheets (all pages are read)."""
+    if is_pdf(filename):
+        rows = list(_rows_from_pdf(file_bytes))
+        return _parse_offerte_rows(rows), _parse_nrfp_rows(rows) + _parse_buiten_rfp_rows(rows)
+    if sheet_name is None:
+        import openpyxl
+
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True)
+        sheet_name = pick_bid_sheet(wb.sheetnames)[0]
+    items = parse_offerte(file_bytes, sheet_name)
+    return items, parse_nrfp(file_bytes) + parse_buiten_rfp(file_bytes, sheet_name)
 
 
 @dataclass

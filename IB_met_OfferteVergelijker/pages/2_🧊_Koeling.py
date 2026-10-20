@@ -49,15 +49,14 @@ from matching_koeling import (
     build_installatie_df,
     build_offerte_vergelijking,
     guess_leverancier,
+    is_pdf,
     load_art_nr_mapping,
     load_budget_df,
     load_categorie_budget_codes,
     match_koeling_installatie,
-    parse_buiten_rfp,
     parse_ib,
-    parse_nrfp,
-    parse_offerte,
     pick_bid_sheet,
+    read_bidsheet,
     vergelijking_regels_df,
     vergelijking_samenvatting,
     vergelijking_to_xlsx,
@@ -123,8 +122,9 @@ def _run_koel_installatie():
             help="Het macro-werkboek met 'IB' in de bestandsnaam, bevat de sheet '2024 Installatie <leverancier>'.",
         )
         bid_file = st.file_uploader(
-            "Bidsheet offerte (.xlsx)", type=["xlsx"],
-            help="De offerte-Excel met 'bidsheet' in de bestandsnaam (bijv. 'Offertetemplate KT').",
+            "Bidsheet offerte (.xlsx of .pdf)", type=["xlsx", "pdf"],
+            help="De offerte-Excel met 'bidsheet' in de bestandsnaam (bijv. 'Offertetemplate KT'), "
+                 "of dezelfde bidsheet als PDF afgedrukt.",
         )
         st.caption(
             "Matching gebeurt via een Art.Nr.Jumbo per omschrijving — uit de offerte zelf als die "
@@ -176,20 +176,25 @@ def _analyze_koel_installatie(ib_file, bid_file):
     # is dramatically faster than openpyxl's read_only=True random .cell()
     # access on this large, complex workbook.
     wb_ib = openpyxl.load_workbook(io.BytesIO(ib_bytes), read_only=True, data_only=True)
-    wb_bid = openpyxl.load_workbook(io.BytesIO(bid_bytes), read_only=True, data_only=True)
 
     ib_sheets = _pick_koeling_sheets(wb_ib)
     if not ib_sheets:
         st.error("Geen sheet gevonden met 'Installatie' in de naam in het IB-bestand.")
         return
-    bid_sheets = pick_bid_sheet(wb_bid.sheetnames)
 
     c1, c2 = st.columns(2)
     ib_sheet = c1.selectbox("IB sheet", ib_sheets, index=0, key="koel_inst_ib_sheet")
-    bid_sheet = c2.selectbox("Offerte sheet", bid_sheets, index=0, key="koel_inst_bid_sheet")
+    bid_sheet = None  # a PDF has no sheets — read_bidsheet reads every page
+    if not is_pdf(bid_file.name):
+        wb_bid = openpyxl.load_workbook(io.BytesIO(bid_bytes), read_only=True, data_only=True)
+        bid_sheet = c2.selectbox("Offerte sheet", pick_bid_sheet(wb_bid.sheetnames), index=0,
+                                 key="koel_inst_bid_sheet")
 
     with st.spinner("Analyseren…"):
-        offerte = parse_offerte(bid_bytes, bid_sheet)
+        offerte, nrfp_items = read_bidsheet(bid_bytes, bid_file.name, bid_sheet)
+        if not any(it.aantal for it in offerte):
+            st.error(f"In **{bid_file.name}** zijn geen offerteregels met een aantal gevonden.")
+            return
         art_nr_mapping = load_art_nr_mapping("frimex")
         mapping_filled = apply_art_nr_mapping(offerte, art_nr_mapping)
         ib = parse_ib(ib_bytes, ib_sheet)
@@ -198,7 +203,6 @@ def _analyze_koel_installatie(ib_file, bid_file):
         budget_link = build_budget_link(bdf, ib)
         buffetten_link = build_buffetten_link(bdf, offerte)
         df = build_installatie_df(offerte, ib, matches, budget_link, buffetten_link)
-        nrfp_items = parse_nrfp(bid_bytes) + parse_buiten_rfp(bid_bytes, bid_sheet)
         categorie_mapping = load_categorie_budget_codes()
         categorie_totalen = build_categorie_totalen(bdf, categorie_mapping)
 
@@ -394,9 +398,10 @@ def _run_offerte_vergelijking():
             help="Het macro-werkboek met de sheet '2024 Installatie <leverancier>' en het Budget-tabblad.",
         )
         bid_files = st.file_uploader(
-            "Bidsheets offerte (.xlsx) — 2 of meer", type=["xlsx"], accept_multiple_files=True,
+            "Bidsheets offerte (.xlsx of .pdf) — 2 of meer", type=["xlsx", "pdf"], accept_multiple_files=True,
             key="koel_verg_bids",
-            help="Eén bidsheet per leverancier, bijv. Frimex 'Offertetemplate KT' en Carrier 'Bidsheet K'.",
+            help="Eén bidsheet per leverancier, bijv. Frimex 'Offertetemplate KT' en Carrier 'Bidsheet K' — "
+                 "als Excel of als PDF afgedrukt.",
         )
         namen = []
         if bid_files:
@@ -444,17 +449,14 @@ def _analyze_offerte_vergelijking(ib_file, bid_files, namen):
 
         offertes = []
         for naam, f in zip(namen, bid_files, strict=True):
-            bid_bytes = f.getvalue()
-            wb_bid = openpyxl.load_workbook(io.BytesIO(bid_bytes), read_only=True)
-            sheet = pick_bid_sheet(wb_bid.sheetnames)[0]
-            items = parse_offerte(bid_bytes, sheet)
+            items, nrfp_items = read_bidsheet(f.getvalue(), f.name)
             if not any(it.aantal for it in items):
-                st.error(f"In **{f.name}** (sheet '{sheet}') zijn geen offerteregels met een aantal gevonden.")
+                st.error(f"In **{f.name}** zijn geen offerteregels met een aantal gevonden.")
                 return
             apply_art_nr_mapping(items, art_nr_mapping)
             matches, _ = match_koeling_installatie(items, ib)
             df = build_installatie_df(items, ib, matches, budget_link, build_buffetten_link(bdf, items))
-            offertes.append((naam, f.name, items, df, parse_nrfp(bid_bytes) + parse_buiten_rfp(bid_bytes, sheet)))
+            offertes.append((naam, f.name, items, df, nrfp_items))
 
         v = build_offerte_vergelijking(
             offertes, build_categorie_totalen(bdf, categorie_mapping), categorie_mapping,
