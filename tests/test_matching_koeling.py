@@ -19,6 +19,7 @@ from matching_koeling import (
     build_buffetten_link,
     build_installatie_df,
     match_koeling_installatie,
+    parse_buiten_rfp,
     parse_ib,
     parse_offerte,
 )
@@ -109,6 +110,37 @@ def test_parse_offerte_reads_aantal_in_normwinkel_header():
     assert len(items) == 1
     assert items[0].categorie == "Categorie koelcellen"
     assert items[0].aantal == 2
+
+
+def test_parse_offerte_falls_back_to_netto_netto_prijs():
+    rows = [
+        ["Categorie verdamper vleesafdeling", "Omschrijving Item", "Eenheid", "Prijs materiaal per eenheid",
+         "Arbeidskosten per eenheid", "Netto netto prijs per eenheid (arbeid & materiaal)", "Aantal in normwinkel"],
+        [None, "Ruimteverdamper vleesafdeling CO₂", "st", None, None, 4107, 1],
+        [None, "Verdamper met eigen prijs", "st", 900.0, None, 950.0, 1],
+    ]
+    items = parse_offerte(_xlsx_bytes("Bidsheet K", rows), "Bidsheet K")
+
+    assert items[0].prijs_materiaal == 4107
+    assert items[1].prijs_materiaal == 900.0  # materiaal filled in -> netto not used
+
+
+def test_buiten_rfp_lines_become_nrfp_items_not_offerte_items():
+    rows = [
+        ["Categorie demontage", "Omschrijving Item", "Eenheid", "Prijs materiaal per eenheid",
+         "Arbeidskosten per eenheid", "Netto netto prijs per eenheid (arbeid & materiaal)", "Aantal in normwinkel"],
+        ["Afpompen", "Koudemiddel afpompen", "kg", 12, None, 12, 10],
+        ["Buiten RFP", "Omschrijving Item"],  # short header: no Aantal/Prijs labels
+        ["Buiten RFP", "Afblazen bestaande installatie", "st", 468, None, 468, 1],
+        ["Buiten RFP", None],
+    ]
+    data = _xlsx_bytes("Bidsheet K", rows)
+
+    assert [i.omschrijving for i in parse_offerte(data, "Bidsheet K")] == ["Koudemiddel afpompen"]
+    buiten = parse_buiten_rfp(data, "Bidsheet K")
+    assert len(buiten) == 1
+    assert buiten[0].omschrijving == "Afblazen bestaande installatie"
+    assert buiten[0].totaal == 468.0
 
 
 def test_parse_ib_skips_nrfp_rows():

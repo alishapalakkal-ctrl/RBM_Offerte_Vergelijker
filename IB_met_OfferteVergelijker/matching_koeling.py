@@ -75,6 +75,7 @@ _OFFERTE_KEYS = {
     "eenheid": {"eenheid"},
     "prijs_materiaal": {"prijsmateriaalpereenheid"},
     "arbeid": {"arbeidskostenpereenheid"},
+    "netto": {"nettonettoprijspereenheidmateriaalenarbeid", "nettonettoprijspereenheidarbeidmateriaal"},
     # 'Aantal in normwinkel' — newer bidsheets (e.g. Carrier's 'Bidsheet K')
     "aantal": {"aantal", "aantalinnormwinkel"},
     "art_manual": {"artnrjumbo", "artjumbo", "artnrjumbomanual"},
@@ -157,6 +158,11 @@ def parse_offerte(file_bytes: bytes, sheet_name: str) -> List[OfferteItem]:
             category = c1.strip()
             continue
 
+        # 'Buiten RFP' lines are extra positions outside the tender, handled
+        # like NRFP by parse_buiten_rfp — not part of any categorie.
+        if _nh(c1) == "buitenrfp":
+            continue
+
         if "omschrijving" not in header_map:
             continue
         desc_col = header_map["omschrijving"]
@@ -172,10 +178,20 @@ def parse_offerte(file_bytes: bytes, sheet_name: str) -> List[OfferteItem]:
             if art_manual and _nh(art_manual) in _OFFERTE_KEYS["art_manual"]:
                 art_manual = None
 
+        prijs_materiaal, arbeid = get("prijs_materiaal"), get("arbeid")
+        # Some leveranciers (e.g. Carrier's 'Bidsheet K', Ruimteverdamper
+        # vleesafdeling) leave materiaal/arbeid empty and only fill the
+        # combined 'Netto netto prijs per eenheid' — use that as the price
+        # so the line isn't counted as € 0.
+        if prijs_materiaal is None and arbeid is None:
+            netto = get("netto")
+            if isinstance(netto, (int, float)):
+                prijs_materiaal = netto
+
         items.append(OfferteItem(
             row=r, categorie=category, subgroep=c1 if isinstance(c1, str) else None,
             omschrijving=desc.strip(), eenheid=get("eenheid"),
-            prijs_materiaal=get("prijs_materiaal"), arbeid=get("arbeid"),
+            prijs_materiaal=prijs_materiaal, arbeid=arbeid,
             aantal=get("aantal"), art_manual=art_manual,
         ))
     return items
@@ -260,6 +276,47 @@ def parse_nrfp(file_bytes: bytes, sheet_name: str = "NRFP") -> List[NrfpItem]:
             prijs=prijs if pd.notna(prijs) else None,
             aantal=aantal if pd.notna(aantal) else None,
             totaal=float(totaal),
+        ))
+    return items
+
+
+def parse_buiten_rfp(file_bytes: bytes, sheet_name: str) -> List[NrfpItem]:
+    """Parse 'Buiten RFP' lines on the bidsheet itself (e.g. Carrier's
+    'Bidsheet K' row 140 'Afblazen bestaande installatie') — the same kind of
+    out-of-tender position as the NRFP sheet, so returned as NrfpItem for
+    callers to add alongside parse_nrfp's items.
+
+    The 'Buiten RFP' header row only repeats a few column labels (no
+    Aantal/Prijs), so each header row is merged into the mapping from the
+    earlier full categorie headers instead of replacing it — the columns sit
+    in the same position across the sheet."""
+    items: List[NrfpItem] = []
+    header_map: Dict[str, int] = {}
+
+    for _r, row_vals in _rows_from_bytes(file_bytes, sheet_name):
+        normed = [_nh(v) for v in row_vals]
+        if "omschrijvingitem" in normed:
+            header_map.update(_build_header_map(normed, _OFFERTE_KEYS))
+            continue
+        if not row_vals or _nh(row_vals[0]) != "buitenrfp":
+            continue
+
+        get = _row_getter(header_map, row_vals)
+        desc = get("omschrijving")
+        if not isinstance(desc, str) or not desc.strip():
+            continue
+        materiaal, arbeid, netto = get("prijs_materiaal"), get("arbeid"), get("netto")
+        num = lambda x: x if isinstance(x, (int, float)) else None  # noqa: E731
+        if num(materiaal) is not None or num(arbeid) is not None:
+            prijs = (num(materiaal) or 0) + (num(arbeid) or 0)
+        else:
+            prijs = num(netto)
+        aantal = num(get("aantal"))
+        if not prijs or not aantal:
+            continue
+        items.append(NrfpItem(
+            code="Buiten RFP", omschrijving=desc.strip(),
+            prijs=prijs, aantal=aantal, totaal=float(prijs * aantal),
         ))
     return items
 

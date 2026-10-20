@@ -44,6 +44,7 @@ from matching_koeling import (
     load_budget_df,
     load_categorie_budget_codes,
     match_koeling_installatie,
+    parse_buiten_rfp,
     parse_ib,
     parse_nrfp,
     parse_offerte,
@@ -197,7 +198,7 @@ def _analyze_koel_installatie(ib_file, bid_file):
         budget_link = build_budget_link(bdf, ib)
         buffetten_link = build_buffetten_link(bdf, offerte)
         df = build_installatie_df(offerte, ib, matches, budget_link, buffetten_link)
-        nrfp_items = parse_nrfp(bid_bytes)
+        nrfp_items = parse_nrfp(bid_bytes) + parse_buiten_rfp(bid_bytes, bid_sheet)
         categorie_mapping = load_categorie_budget_codes()
         categorie_totalen = build_categorie_totalen(bdf, categorie_mapping)
 
@@ -304,7 +305,8 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None, categorie_
         nrfp_totaal = sum(it.totaal for it in nrfp_items)
         st.subheader("NRFP — posities niet in de RFP")
         st.caption(
-            "Extra/wijzigingsposities buiten de standaard tender (bijv. huur container, brandsturing) — "
+            "Extra/wijzigingsposities buiten de standaard tender (bijv. huur container, brandsturing), uit de "
+            "NRFP-sheet en de 'Buiten RFP'-regels op de bidsheet — "
             "de offerte's eigen Totaalprijs telt deze apart op naast de categorie-regels hierboven."
         )
         n1, n2 = st.columns(2)
