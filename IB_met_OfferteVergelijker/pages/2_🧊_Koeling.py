@@ -57,18 +57,20 @@ inject_base_style()
 #: Koelcellen, vriescellen and celaccessoires are one physical scope from
 #: the koelinstallateur's perspective (the cellen plus the accessories that
 #: go with them) even though the offerte/Budget book them as three separate
-#: categories — grouped together for the verschil-per-categorie pie chart
-#: so it reads as one slice instead of three slivers.
-_PIE_CATEGORIE_GROEP = {
-    "Categorie koelcellen": "Koel-/vriescellen (incl. celaccessoires)",
-    "Categorie vriescellen": "Koel-/vriescellen (incl. celaccessoires)",
-    "Categorie celaccessoires": "Koel-/vriescellen (incl. celaccessoires)",
+#: categories — grouped together in the Totaal per categorie table and the
+#: verschil-per-categorie pie chart so they read as one row/slice instead
+#: of three.
+_CATEGORIE_GROEP = {
+    "Categorie koelcellen": "Categorie koel-/vriescellen (incl. celaccessoires)",
+    "Categorie vriescellen": "Categorie koel-/vriescellen (incl. celaccessoires)",
+    "Categorie celaccessoires": "Categorie koel-/vriescellen (incl. celaccessoires)",
 }
 
 
-def _pie_categorie_label(categorie: str) -> str:
-    grouped = _PIE_CATEGORIE_GROEP.get(categorie, categorie)
-    return grouped[len("Categorie "):] if grouped.startswith("Categorie ") else grouped
+def _pie_categorie_label(categorie) -> str:
+    if not isinstance(categorie, str):
+        return "Overig"
+    return categorie[len("Categorie "):] if categorie.startswith("Categorie ") else categorie
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -273,6 +275,14 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None, categorie_
             cat_df["Totaal IB"] = cat_df.apply(
                 lambda r: categorie_totalen.get(r["Categorie"], r["Totaal IB"]), axis=1
             )
+        # Merge after the per-categorie Budget lookup above, which is keyed
+        # by the original offerte Categorie labels.
+        cat_df["Categorie"] = cat_df["Categorie"].replace(_CATEGORIE_GROEP)
+        cat_df = (
+            cat_df.groupby("Categorie", dropna=False)[["Totaal Offerte", "Totaal IB"]]
+            .sum(min_count=1)
+            .reset_index()
+        )
         cat_df["Verschil"] = cat_df["Totaal Offerte"] - cat_df["Totaal IB"]
         cat_df = cat_df.sort_values("Totaal Offerte", ascending=False, na_position="last")
 
@@ -320,7 +330,6 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None, categorie_
 
         pie_df = cat_df.dropna(subset=["Verschil"]).copy()
         pie_df["Groep"] = pie_df["Categorie"].map(_pie_categorie_label)
-        pie_df = pie_df.groupby("Groep", as_index=False)["Verschil"].sum()
         pie_df["Abs verschil"] = pie_df["Verschil"].abs()
         pie_df = pie_df[pie_df["Abs verschil"] > 0]
 
