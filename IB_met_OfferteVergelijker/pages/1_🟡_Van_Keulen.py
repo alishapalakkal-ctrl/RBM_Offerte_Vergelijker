@@ -237,21 +237,15 @@ def _show_results(df: pd.DataFrame, budget_summary: List[dict] = None, lamellen_
 
     # ── Metrics ────────────────────────────────────────────────────────────────
     total     = len(df)
-    exact     = int((df["Methode"] == "exact_artnr").sum())
-    manual    = int((df["Methode"] == "manual_code").sum())
-    fuzzy     = int((df["Methode"] == "fuzzy").sum())
     unmatched = int((df["Methode"] == "unmatched").sum())
     qty_afw = int((df["_status"] == "qty_diff").sum())
     prc_afw = int((df["Prijs verschil"] != "").sum())
 
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Unieke art.nr.", total)
-    c2.metric("Exact",         exact,     help="Exact artikel-nr. match")
-    c3.metric("Manual code",   manual,    help="Match via Manual-header in PDF")
-    c4.metric("Fuzzy",         fuzzy,     help="Fuzzy beschrijvingsMatch")
-    c5.metric("Niet gematch",  unmatched)
-    c6.metric("Aantal ≠",      qty_afw,   help="Aantal verschil PDF vs IB Budget")
-    c7.metric("Prijs ≠",       prc_afw,   help="Prijs verschil PDF vs NETTO")
+    c2.metric("Niet gematch",  unmatched)
+    c3.metric("Aantal ≠",      qty_afw,   help="Aantal verschil PDF vs IB Budget")
+    c4.metric("Prijs ≠",       prc_afw,   help="Prijs verschil PDF vs NETTO")
 
     # ── Tabs ───────────────────────────────────────────────────────────────────
     # Samenvatting first — the tab a user should land on right after

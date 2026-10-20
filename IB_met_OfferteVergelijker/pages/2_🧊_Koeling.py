@@ -219,19 +219,15 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None, categorie_
     df = df[df["Offerte Aantal"].notna()].reset_index(drop=True)
 
     total = len(df)
-    handmatig = int((df["Match"] == "handmatig").sum())
-    fuzzy = int((df["Match"] == "fuzzy").sum())
     unmatched = int((df["_status"] == "unmatched").sum())
     prijs_afw = int((df["_status"] == "prijs_afwijking").sum())
     aantal_afw = int((df["_status"] == "aantal_afwijking").sum())
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Offerte regels", total)
-    c2.metric("Handmatig", handmatig, help="Gematcht via Art.Nr.Jumbo kolom")
-    c3.metric("Fuzzy", fuzzy, help="Gematcht via tekst-vergelijking")
-    c4.metric("Niet gematcht", unmatched)
-    c5.metric("Prijs ≠", prijs_afw)
-    c6.metric("Aantal ≠", aantal_afw)
+    c2.metric("Niet gematcht", unmatched)
+    c3.metric("Prijs ≠", prijs_afw)
+    c4.metric("Aantal ≠", aantal_afw)
 
     # Samenvatting first — the tab a user should land on right after
     # Analyseren, per project convention (see CLAUDE.md).
