@@ -3,7 +3,7 @@
 Offerte Vergelijker – Koeling section.
 Run via the app entrypoint:  streamlit run IB_met_OfferteVergelijker/Home.py
 
-Two independent sub-flows, chosen up front:
+Three independent sub-flows, chosen up front:
 
   Koel Installatie
     Compares the Dutch koelinstallatie-offerte (bidsheet, e.g. Frimex
@@ -12,6 +12,11 @@ Two independent sub-flows, chosen up front:
     by default — matching uses a manually filled-in 'Art.Nr.Jumbo' column
     in the offerte (exact join) with a description-fuzzy fallback for the
     rest, then shows aantal- and prijsverschillen per matched item.
+
+  Offertes vergelijken
+    Runs the Koel Installatie matching for two or more bidsheets against
+    the same IB and lines them up per IB article, with per-categorie totals
+    and an Excel export (see build_offerte_vergelijking).
 
   Koel Meubel
     Unlike Koel Installatie, the matching itself happens in Dynamo (Revit
@@ -25,6 +30,7 @@ Two independent sub-flows, chosen up front:
 """
 
 import io
+from datetime import date
 
 import altair as alt
 import openpyxl
@@ -34,12 +40,15 @@ from streamlit_pdf_viewer import pdf_viewer
 
 from common import configure_page, inject_base_style, jumbo_header, back_to_overview
 from matching_koeling import (
+    CATEGORIE_GROEP,
     HAS_RAPIDFUZZ,
     apply_art_nr_mapping,
     build_budget_link,
     build_buffetten_link,
     build_categorie_totalen,
     build_installatie_df,
+    build_offerte_vergelijking,
+    guess_leverancier,
     load_art_nr_mapping,
     load_budget_df,
     load_categorie_budget_codes,
@@ -48,24 +57,15 @@ from matching_koeling import (
     parse_ib,
     parse_nrfp,
     parse_offerte,
+    pick_bid_sheet,
+    vergelijking_regels_df,
+    vergelijking_samenvatting,
+    vergelijking_to_xlsx,
     _pick_koeling_sheets,
 )
 
 configure_page("Offerte Vergelijker – Koeling", icon="🧊")
 inject_base_style()
-
-
-#: Koelcellen, vriescellen and celaccessoires are one physical scope from
-#: the koelinstallateur's perspective (the cellen plus the accessories that
-#: go with them) even though the offerte/Budget book them as three separate
-#: categories — grouped together in the Totaal per categorie table and the
-#: verschil-per-categorie pie chart so they read as one row/slice instead
-#: of three.
-_CATEGORIE_GROEP = {
-    "Categorie koelcellen": "Categorie koel-/vriescellen (incl. celaccessoires)",
-    "Categorie vriescellen": "Categorie koel-/vriescellen (incl. celaccessoires)",
-    "Categorie celaccessoires": "Categorie koel-/vriescellen (incl. celaccessoires)",
-}
 
 
 def _pie_categorie_label(categorie) -> str:
@@ -182,7 +182,7 @@ def _analyze_koel_installatie(ib_file, bid_file):
     if not ib_sheets:
         st.error("Geen sheet gevonden met 'Installatie' in de naam in het IB-bestand.")
         return
-    bid_sheets = [s for s in wb_bid.sheetnames if "offertetemplate" in s.lower()] or wb_bid.sheetnames
+    bid_sheets = pick_bid_sheet(wb_bid.sheetnames)
 
     c1, c2 = st.columns(2)
     ib_sheet = c1.selectbox("IB sheet", ib_sheets, index=0, key="koel_inst_ib_sheet")
@@ -274,7 +274,7 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None, categorie_
             )
         # Merge after the per-categorie Budget lookup above, which is keyed
         # by the original offerte Categorie labels.
-        cat_df["Categorie"] = cat_df["Categorie"].replace(_CATEGORIE_GROEP)
+        cat_df["Categorie"] = cat_df["Categorie"].replace(CATEGORIE_GROEP)
         cat_df = (
             cat_df.groupby("Categorie", dropna=False)[["Totaal Offerte", "Totaal IB"]]
             .sum(min_count=1)
@@ -377,6 +377,158 @@ def _show_koel_installatie_results(df: pd.DataFrame, nrfp_items=None, categorie_
         st.download_button(
             "📥 Download vergelijking (CSV)", data=csv,
             file_name="koel_installatie_vergelijking.csv", mime="text/csv",
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Offertes vergelijken — meerdere bidsheets naast elkaar vs IB
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _run_offerte_vergelijking():
+    jumbo_header("🧊", "Offerte Vergelijker", "Koeling — Offertes vergelijken")
+
+    with st.sidebar:
+        st.header("📂 Bestanden uploaden")
+        ib_file = st.file_uploader(
+            "IB macro-werkboek (.xlsm)", type=["xlsm"], key="koel_verg_ib",
+            help="Het macro-werkboek met de sheet '2024 Installatie <leverancier>' en het Budget-tabblad.",
+        )
+        bid_files = st.file_uploader(
+            "Bidsheets offerte (.xlsx) — 2 of meer", type=["xlsx"], accept_multiple_files=True,
+            key="koel_verg_bids",
+            help="Eén bidsheet per leverancier, bijv. Frimex 'Offertetemplate KT' en Carrier 'Bidsheet K'.",
+        )
+        namen = []
+        if bid_files:
+            st.caption("Naam per offerte (zo heten de kolommen in de vergelijking):")
+            for i, f in enumerate(bid_files):
+                namen.append(st.text_input(f.name, value=guess_leverancier(f.name), key=f"koel_verg_naam_{i}_{f.name}").strip())
+        run = st.button("▶ Analyseren", type="primary", use_container_width=True, key="koel_verg_run")
+        if not HAS_RAPIDFUZZ:
+            st.warning("rapidfuzz niet gevonden – fuzzy matching uitgeschakeld.")
+
+    if "koel_verg" not in st.session_state:
+        st.session_state.koel_verg = None
+
+    if run:
+        if not ib_file or len(bid_files or []) < 2:
+            st.error("Upload het **IB macro-werkboek** en minstens **twee bidsheets**.")
+        elif not all(namen) or len(set(namen)) != len(namen):
+            st.error("Geef elke offerte een eigen, niet-lege naam.")
+        else:
+            _analyze_offerte_vergelijking(ib_file, bid_files, namen)
+
+    v = st.session_state.koel_verg
+    if v is None:
+        st.info(
+            "Upload het IB macro-werkboek en twee of meer bidsheets via de zijbalk en klik op **Analyseren** — "
+            "de offertes worden regel voor regel naast elkaar en naast het IB gezet."
+        )
+        return
+    _show_offerte_vergelijking(v)
+
+
+def _analyze_offerte_vergelijking(ib_file, bid_files, namen):
+    with st.spinner("Analyseren…"):
+        ib_bytes = ib_file.getvalue()
+        wb_ib = openpyxl.load_workbook(io.BytesIO(ib_bytes), read_only=True, data_only=True)
+        ib_sheets = _pick_koeling_sheets(wb_ib)
+        if not ib_sheets:
+            st.error("Geen sheet gevonden met 'Installatie' in de naam in het IB-bestand.")
+            return
+        ib = parse_ib(ib_bytes, ib_sheets[0])
+        bdf = load_budget_df(ib_bytes)
+        budget_link = build_budget_link(bdf, ib)
+        art_nr_mapping = load_art_nr_mapping("frimex")
+        categorie_mapping = load_categorie_budget_codes()
+
+        offertes = []
+        for naam, f in zip(namen, bid_files, strict=True):
+            bid_bytes = f.getvalue()
+            wb_bid = openpyxl.load_workbook(io.BytesIO(bid_bytes), read_only=True)
+            sheet = pick_bid_sheet(wb_bid.sheetnames)[0]
+            items = parse_offerte(bid_bytes, sheet)
+            if not any(it.aantal for it in items):
+                st.error(f"In **{f.name}** (sheet '{sheet}') zijn geen offerteregels met een aantal gevonden.")
+                return
+            apply_art_nr_mapping(items, art_nr_mapping)
+            matches, _ = match_koeling_installatie(items, ib)
+            df = build_installatie_df(items, ib, matches, budget_link, build_buffetten_link(bdf, items))
+            offertes.append((naam, f.name, items, df, parse_nrfp(bid_bytes) + parse_buiten_rfp(bid_bytes, sheet)))
+
+        v = build_offerte_vergelijking(
+            offertes, build_categorie_totalen(bdf, categorie_mapping), categorie_mapping,
+            ib_bestand=f"{ib_file.name} (sheet '{ib_sheets[0]}' + Budget)",
+        )
+    st.session_state.koel_verg = v
+    st.rerun()
+
+
+def _show_offerte_vergelijking(v):
+    sam = vergelijking_samenvatting(v)
+    money_cols = ["IB (Budget)", *v.namen, *[f"{n} − IB" for n in v.namen]]
+    money = lambda x: f"€ {x:,.2f}" if isinstance(x, (int, float)) and pd.notna(x) else ""
+
+    tab_sam, tab_all, tab_exp = st.tabs(["📊 Samenvatting", "📋 Alle regels", "💾 Export"])
+
+    with tab_sam:
+        tot = sam[sam["Categorie"] == "Totaal incl. NRFP"].iloc[0]
+        cols = st.columns(len(v.namen) + 1)
+        cols[0].metric("IB (Budget)", money(tot["IB (Budget)"]))
+        for c, n in zip(cols[1:], v.namen, strict=True):
+            diff = tot[n] - tot["IB (Budget)"]
+            c.metric(f"{n} incl. NRFP", money(tot[n]), delta=f"{diff:+,.2f} t.o.v. IB", delta_color="inverse")
+
+        st.subheader("Totaal per categorie")
+        st.caption(
+            "Groen = laagste offerte. 'Alleen …' betekent dat de andere partij(en) in die categorie niets hebben "
+            "geoffreerd — een scope-verschil, geen prijsvoordeel. IB komt waar bekend uit de subtotaal-regel op "
+            "het Budget-tabblad."
+        )
+
+        def _green_lowest(row):
+            styles = [""] * len(row)
+            if row["Categorie"] == "NRFP / Buiten RFP":
+                return styles
+            quoted = {n: row[n] for n in v.namen if row[n] > 0}
+            if quoted:
+                best = min(quoted, key=quoted.get)
+                styles[list(row.index).index(best)] = "background-color:#C6EFCE"
+            return styles
+
+        st.dataframe(
+            sam.style.apply(_green_lowest, axis=1).format({c: money for c in money_cols}),
+            use_container_width=True, hide_index=True,
+        )
+
+        unmatched = [r for r in v.regels if "geen IB-match" in r.opmerking or "fuzzy" in r.opmerking]
+        if unmatched:
+            st.caption(
+                f"⚠️ {len(unmatched)} regel(s) zijn via fuzzy matching of helemaal niet aan het IB gekoppeld — "
+                "zie de kolom Opmerking in 'Alle regels'."
+            )
+
+    with tab_all:
+        rdf = vergelijking_regels_df(v)
+        money_line = ["IB Prijs p.e.", "IB Totaal", *[f"{n} {k}" for n in v.namen for k in ("Prijs p.e.", "Totaal")]]
+        num = lambda x: f"{x:g}" if isinstance(x, (int, float)) and pd.notna(x) else ""
+        st.caption(f"{len(rdf)} regels, uitgelijnd op Art.Nr.Jumbo — alleen regels met een aantal in een offerte of het IB.")
+        st.dataframe(
+            rdf.style.format({**{c: money for c in money_line},
+                              **{c: num for c in ["IB Aantal", *[f"{n} Aantal" for n in v.namen]]}}),
+            use_container_width=True, hide_index=True, height=600,
+        )
+
+    with tab_exp:
+        st.write(
+            "Excel met drie tabbladen — Samenvatting, Vergelijking (per regel) en NRFP. Totalen zijn formules, "
+            "dus de sheet rekent mee als je een aantal of prijs aanpast."
+        )
+        st.download_button(
+            "📥 Download offertevergelijking (Excel)",
+            data=vergelijking_to_xlsx(v, gemaakt_op=date.today().strftime("%d-%m-%Y")),
+            file_name=f"Offertevergelijking Koel Installatie - {' vs '.join(v.namen)}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
 
 
@@ -562,11 +714,15 @@ if "koeling_kind" not in st.session_state:
 @st.dialog("Kies type")
 def _choose_kind():
     st.write("Wat wil je vergelijken?")
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     if c1.button("🧯 Koel Installatie", use_container_width=True, help="IB macro-werkboek vs bidsheet offerte"):
         st.session_state.koeling_kind = "installatie"
         st.rerun()
-    if c2.button("🧊 Koel Meubel", use_container_width=True, help="OC lijst / Dynamo Positienummer Match export"):
+    if c2.button("📑 Offertes vergelijken", use_container_width=True,
+                 help="Twee of meer koelinstallatie-bidsheets naast elkaar en naast het IB"):
+        st.session_state.koeling_kind = "vergelijking"
+        st.rerun()
+    if c3.button("🧊 Koel Meubel", use_container_width=True, help="OC lijst / Dynamo Positienummer Match export"):
         st.session_state.koeling_kind = "meubel"
         st.rerun()
 
@@ -587,5 +743,7 @@ with wk:
 
 if st.session_state.koeling_kind == "installatie":
     _run_koel_installatie()
+elif st.session_state.koeling_kind == "vergelijking":
+    _run_offerte_vergelijking()
 else:
     _run_koel_meubel()

@@ -929,3 +929,484 @@ def build_installatie_df(
             "Prijs verschil (%)": prijs_diff_pct,
         })
     return pd.DataFrame(rows)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Offertevergelijking — meerdere bidsheets naast elkaar vs IB
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: Koelcellen, vriescellen and celaccessoires are one physical scope from
+#: the koelinstallateur's perspective (the cellen plus the accessories that
+#: go with them) even though the offerte/Budget book them as three separate
+#: categories — grouped together in every per-categorie overview so they
+#: read as one row/slice instead of three.
+CATEGORIE_GROEP_LABEL = "Categorie koel-/vriescellen (incl. celaccessoires)"
+CATEGORIE_GROEP = {
+    "Categorie koelcellen": CATEGORIE_GROEP_LABEL,
+    "Categorie vriescellen": CATEGORIE_GROEP_LABEL,
+    "Categorie celaccessoires": CATEGORIE_GROEP_LABEL,
+}
+
+#: Leveranciers recognised in a bidsheet filename, for a default offerte name.
+_LEVERANCIER_HINTS = {"frimex": "Frimex", "carrier": "Carrier", "ccr": "Carrier", "kaplanlaar": "Kaplanlaar"}
+
+
+def pick_bid_sheet(sheetnames: List[str]) -> List[str]:
+    """Candidate offerte sheets in a bidsheet: 'Offertetemplate KT' when
+    present, else every sheet (e.g. Carrier's single 'Bidsheet K')."""
+    return [s for s in sheetnames if "offertetemplate" in s.lower()] or list(sheetnames)
+
+
+def guess_leverancier(filename: str) -> str:
+    """Default offerte name from a bidsheet filename — a known leverancier
+    when the name mentions one, else the filename without extension."""
+    low = filename.lower()
+    for hint, naam in _LEVERANCIER_HINTS.items():
+        if re.search(rf"(^|[^a-z]){hint}([^a-z]|$)", low):
+            return naam
+    return re.sub(r"\.xlsx?$", "", filename, flags=re.IGNORECASE)[:30]
+
+
+@dataclass
+class VergelijkingRegel:
+    """One line of the side-by-side comparison: an IB article (or, without
+    an IB match, an offerte omschrijving) with each offerte's aantal and
+    prijs p.e. — `offertes[i]` is (aantal, prijs) for offerte i, (None, None)
+    when that offerte doesn't have the line at all."""
+    categorie: Optional[str]
+    art_nr_jumbo: Optional[str]
+    omschrijving: str
+    ib_omschrijving: Optional[str]
+    eenheid: Optional[str]
+    ib_aantal: Optional[float]
+    ib_prijs: Optional[float]
+    offertes: List[tuple]
+    opmerking: str = ""
+
+    @property
+    def ib_totaal(self) -> float:
+        return (self.ib_aantal or 0) * (self.ib_prijs or 0)
+
+    def offerte_totaal(self, i: int) -> float:
+        aantal, prijs = self.offertes[i]
+        return (aantal or 0) * (prijs or 0)
+
+
+@dataclass
+class OfferteVergelijking:
+    namen: List[str]
+    bestanden: List[str]
+    regels: List[VergelijkingRegel]
+    nrfp: List[List[NrfpItem]]
+    #: grouped Categorie labels in offerte order
+    categorieen: List[str]
+    #: grouped Categorie -> Budget subheading Totaal, only where every member
+    #: categorie has a Budget code (see build_categorie_totalen)
+    ib_categorie_totalen: Dict[str, float]
+    ib_categorie_codes: Dict[str, str]
+    ib_bestand: str = ""
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not pd.isna(v)
+
+
+def _clean(v):
+    return None if isinstance(v, float) and pd.isna(v) else v
+
+
+def build_offerte_vergelijking(
+    offertes: List[tuple],
+    categorie_totalen: Dict[str, float],
+    categorie_mapping: Dict[str, List[tuple]],
+    ib_bestand: str = "",
+) -> OfferteVergelijking:
+    """Line up several bidsheets against the same IB.
+
+    `offertes` is a list of (naam, bestand, items, df, nrfp_items) where
+    `df` is build_installatie_df's output for `items` (row-aligned). Lines
+    are keyed by the IB Art.Nr.Jumbo each offerte line matched — so the same
+    IB article lines up across offertes even if the leveranciers word it
+    differently — falling back to the offerte omschrijving for lines without
+    an IB match. Such an omschrijving-only line is folded into the IB-article
+    line of another offerte with the same omschrijving (they share the
+    bidsheet template). Only lines with an aantal in at least one offerte or
+    in the IB are kept."""
+    per_offerte = []
+    for _naam, _bestand, items, df, _nrfp in offertes:
+        recs: Dict[str, dict] = {}
+        for o, (_, r) in zip(items, df.iterrows(), strict=True):
+            art = r["Art.Nr.Jumbo"] if isinstance(r["Art.Nr.Jumbo"], str) else None
+            key = art or "omschr:" + _nh(o.omschrijving)
+            prijs = None
+            if o.prijs_materiaal is not None or o.arbeid is not None:
+                prijs = (o.prijs_materiaal or 0) + (o.arbeid or 0)
+            aantal = o.aantal or None
+            rec = recs.get(key)
+            if rec is None:
+                recs[key] = dict(
+                    art=art, categorie=CATEGORIE_GROEP.get(o.categorie, o.categorie),
+                    omschrijving=o.omschrijving, eenheid=o.eenheid, aantal=aantal, prijs=prijs, row=o.row,
+                    ib_omschrijving=_clean(r["IB omschrijving"]), ib_aantal=_clean(r["IB Aantal"]),
+                    ib_prijs=_clean(r["IB Prijs p.e."]), match=r["Match"], match_pct=r["Match %"], n=1,
+                )
+            elif aantal:
+                # Two offerte lines on one IB article: add them up.
+                if rec["aantal"]:
+                    totaal = rec["aantal"] * (rec["prijs"] or 0) + aantal * (prijs or 0)
+                    rec["aantal"] += aantal
+                    rec["prijs"] = totaal / rec["aantal"]
+                else:
+                    rec.update(aantal=aantal, prijs=prijs)
+                rec["n"] += 1
+        per_offerte.append(recs)
+
+    by_desc: Dict[str, str] = {}
+    for recs in per_offerte:
+        for k, rec in recs.items():
+            if not k.startswith("omschr:"):
+                by_desc.setdefault(_nh(rec["omschrijving"]), k)
+    slots: Dict[str, Dict[int, dict]] = {}
+    for i, recs in enumerate(per_offerte):
+        for k, rec in recs.items():
+            target = by_desc.get(k[len("omschr:"):]) if k.startswith("omschr:") else None
+            if target and target not in recs:
+                k = target
+            slots.setdefault(k, {})[i] = rec
+
+    def first(slot, field):
+        for i in sorted(slot):
+            v = slot[i].get(field)
+            if v is not None:
+                return v
+        return None
+
+    namen = [o[0] for o in offertes]
+    regels, order = [], []
+    for slot in slots.values():
+        ib_aantal = first(slot, "ib_aantal")
+        if not any(rec["aantal"] for rec in slot.values()) and not ib_aantal:
+            continue
+        notes = []
+        for i in sorted(slot):
+            rec = slot[i]
+            if rec["match"] == "fuzzy":
+                notes.append(f"{namen[i]}: fuzzy match {rec['match_pct']}")
+            elif rec["match"] == "geen match" and rec["aantal"]:
+                notes.append(f"{namen[i]}: geen IB-match")
+            if rec["n"] > 1:
+                notes.append(f"{namen[i]}: {rec['n']} regels samengeteld")
+        regels.append(VergelijkingRegel(
+            categorie=first(slot, "categorie"), art_nr_jumbo=first(slot, "art"),
+            omschrijving=first(slot, "omschrijving"), ib_omschrijving=first(slot, "ib_omschrijving"),
+            eenheid=first(slot, "eenheid"), ib_aantal=ib_aantal, ib_prijs=first(slot, "ib_prijs"),
+            offertes=[(slot[i]["aantal"], slot[i]["prijs"]) if i in slot else (None, None)
+                      for i in range(len(offertes))],
+            opmerking="; ".join(notes),
+        ))
+        i0 = min(slot)
+        order.append((i0, slot[i0]["row"]))
+
+    # Keep bidsheet order: categories as they first appear, lines by row.
+    ranked = sorted(zip(order, regels, strict=True), key=lambda x: x[0])
+    categorieen: List[str] = []
+    for _, regel in ranked:
+        if regel.categorie not in categorieen:
+            categorieen.append(regel.categorie)
+    ranked.sort(key=lambda x: (categorieen.index(x[1].categorie), x[0]))
+
+    ib_tot, ib_codes = {}, {}
+    for cat in categorieen:
+        members = [k for k, g in CATEGORIE_GROEP.items() if g == cat] or [cat]
+        if all(m in categorie_totalen for m in members):
+            ib_tot[cat] = round(sum(categorie_totalen[m] for m in members), 2)
+            ib_codes[cat] = ", ".join(code for m in members for code, _ in categorie_mapping.get(m, []))
+
+    return OfferteVergelijking(
+        namen=namen, bestanden=[o[1] for o in offertes], regels=[r for _, r in ranked],
+        nrfp=[o[4] for o in offertes], categorieen=categorieen,
+        ib_categorie_totalen=ib_tot, ib_categorie_codes=ib_codes, ib_bestand=ib_bestand,
+    )
+
+
+def _laagste(namen: List[str], totalen: List[float]) -> str:
+    quoted = [(t, n) for t, n in zip(totalen, namen, strict=True) if t > 0]
+    if not quoted:
+        return ""
+    best = min(quoted, key=lambda x: x[0])[1]
+    return f"Alleen {best}" if len(quoted) == 1 else best
+
+
+def vergelijking_samenvatting(v: OfferteVergelijking) -> pd.DataFrame:
+    """Per-categorie totals (IB + each offerte), then NRFP and grand totals
+    — the same figures vergelijking_to_xlsx's Samenvatting sheet computes
+    with formulas."""
+    rows = []
+    for cat in v.categorieen:
+        regels = [r for r in v.regels if r.categorie == cat]
+        ib = v.ib_categorie_totalen.get(cat, sum(r.ib_totaal for r in regels))
+        offs = [sum(r.offerte_totaal(i) for r in regels) for i in range(len(v.namen))]
+        rows.append((cat, ib, offs, True))
+    excl_ib = sum(r[1] for r in rows)
+    excl = [sum(r[2][i] for r in rows) for i in range(len(v.namen))]
+    nrfp = [sum(it.totaal for it in items) for items in v.nrfp]
+    rows.append(("NRFP / Buiten RFP", 0.0, nrfp, False))
+    rows.append(("Totaal excl. NRFP", excl_ib, excl, True))
+    rows.append(("Totaal incl. NRFP", excl_ib, [a + b for a, b in zip(excl, nrfp, strict=True)], True))
+
+    out = []
+    for cat, ib, offs, with_laagste in rows:
+        rec = {"Categorie": cat, "IB (Budget)": ib}
+        rec.update({n: t for n, t in zip(v.namen, offs, strict=True)})
+        rec.update({f"{n} − IB": t - ib for n, t in zip(v.namen, offs, strict=True)})
+        rec["Laagste"] = _laagste(v.namen, offs) if with_laagste else ""
+        out.append(rec)
+    return pd.DataFrame(out)
+
+
+def vergelijking_regels_df(v: OfferteVergelijking) -> pd.DataFrame:
+    """Flat per-line table for on-screen display."""
+    out = []
+    for r in v.regels:
+        rec = {"Categorie": r.categorie, "Art.Nr.Jumbo": r.art_nr_jumbo, "Omschrijving": r.omschrijving,
+               "IB Aantal": r.ib_aantal, "IB Prijs p.e.": r.ib_prijs, "IB Totaal": r.ib_totaal}
+        for i, n in enumerate(v.namen):
+            aantal, prijs = r.offertes[i]
+            rec[f"{n} Aantal"] = aantal
+            rec[f"{n} Prijs p.e."] = prijs
+            rec[f"{n} Totaal"] = r.offerte_totaal(i)
+        rec["Laagste"] = _laagste(v.namen, [r.offerte_totaal(i) for i in range(len(v.namen))])
+        rec["Opmerking"] = r.opmerking
+        out.append(rec)
+    return pd.DataFrame(out)
+
+
+def _xl_laagste_formula(namen: List[str], refs: List[str]) -> str:
+    """Excel formula naming the lowest offerte among those with a totaal > 0
+    ('Alleen X' when only one quoted), mirroring _laagste."""
+    m = "MIN(" + ",".join(f"IF({r}>0,{r},9E+99)" for r in refs) + ")"
+    cnt = "+".join(f"({r}>0)" for r in refs)
+    name = '""'
+    for r, n in reversed(list(zip(refs, namen, strict=True))):
+        name = f'IF({r}={m},"{n}",{name})'
+    return f'=IF({cnt}=0,"",IF({cnt}=1,"Alleen "&{name},{name}))'
+
+
+def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
+    """Write the comparison as a formatted workbook (Samenvatting /
+    Vergelijking / NRFP). Line and category totals are Excel formulas, so the
+    sheet recalculates when someone edits an aantal or prijs; IB category
+    totals taken from the Budget subheadings are values (blue, with a cell
+    comment naming the Budget code)."""
+    from openpyxl import Workbook
+    from openpyxl.comments import Comment
+    from openpyxl.formatting.rule import FormulaRule
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter as L
+
+    namen = [n.replace('"', "'") for n in v.namen]
+    n_off = len(namen)
+    EUR = '€ #,##0.00;-€ #,##0.00;"-"'
+    NUM = '#,##0.##;-#,##0.##;"-"'
+    PCT = '0.0%;-0.0%;"-"'
+    f_norm = Font(name="Arial", size=10)
+    f_bold = Font(name="Arial", size=10, bold=True)
+    f_head = Font(name="Arial", size=10, bold=True, color="FFFFFF")
+    f_title = Font(name="Arial", size=14, bold=True)
+    f_input = Font(name="Arial", size=10, color="0000FF")
+    f_note = Font(name="Arial", size=9, italic=True, color="666666")
+    fill_head = PatternFill("solid", fgColor="1F4E78")
+    fills_grp = [PatternFill("solid", fgColor=c) for c in ("D9D9D9", "DDEBF7", "FCE4D6", "E2EFDA", "FFF2CC", "EDE1F5")]
+    fill_tot = PatternFill("solid", fgColor="D9E1F2")
+    # Conditional-format fills need the colour as bgColor, hence start/end.
+    fill_best = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    thin = Side(style="thin", color="BFBFBF")
+    border = Border(top=thin, bottom=thin, left=thin, right=thin)
+    wrap = Alignment(wrap_text=True, vertical="top")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def head(cell, fill=fill_head, font=f_head):
+        cell.font, cell.fill, cell.alignment, cell.border = font, fill, center, border
+
+    def lowest_rule(col: str, row: int, cols: List[str]) -> FormulaRule:
+        others = ",".join(f"IF(${o}{row}>0,${o}{row},9E+99)" for o in cols)
+        return FormulaRule(formula=[f"AND({col}{row}>0,{col}{row}=MIN({others}))"], fill=fill_best)
+
+    wb = Workbook()
+    s = wb.active
+    s.title = "Samenvatting"
+    ws = wb.create_sheet("Vergelijking")
+    wn = wb.create_sheet("NRFP")
+
+    # ── Vergelijking ──
+    ib_cols = (6, 7, 8)
+    off_cols = [tuple(9 + 4 * i + k for k in range(4)) for i in range(n_off)]
+    col_best = 9 + 4 * n_off
+    col_note = col_best + 1
+    ws.cell(1, 1, "Vergelijking per regel — Koel Installatie").font = f_title
+    ws.cell(2, 1, "Regels met een aantal in minstens één offerte of in het IB, uitgelijnd op Art.Nr.Jumbo. "
+                  "Totaal = Aantal × Prijs p.e. (materiaal + arbeid); groen = laagste offerte op die regel.").font = f_note
+    for c, t in enumerate(["Categorie", "Art.Nr.Jumbo", "Omschrijving (offerte)", "IB omschrijving (Budget)",
+                           "Eenheid"], 1):
+        ws.merge_cells(start_row=4, start_column=c, end_row=5, end_column=c)
+        head(ws.cell(4, c, t))
+    groups = [("IB (Budget)", ib_cols, ("Aantal", "Prijs p.e.", "Totaal"))]
+    groups += [(namen[i], off_cols[i], ("Aantal", "Prijs p.e.", "Totaal", "Verschil t.o.v. IB")) for i in range(n_off)]
+    for gi, (label, cols, subs) in enumerate(groups):
+        fill = fills_grp[gi % len(fills_grp)]
+        ws.merge_cells(start_row=4, start_column=cols[0], end_row=4, end_column=cols[-1])
+        ws.cell(4, cols[0], label)
+        for c, t in zip(cols, subs, strict=True):
+            head(ws.cell(4, c), fill, f_bold)
+            head(ws.cell(5, c, t), fill, f_bold)
+    for c, t in ((col_best, "Laagste offerte"), (col_note, "Opmerking")):
+        ws.merge_cells(start_row=4, start_column=c, end_row=5, end_column=c)
+        head(ws.cell(4, c, t))
+
+    first = 6
+    r = first
+    ia, ip, it = (L(c) for c in ib_cols)
+    for regel in v.regels:
+        for c, val in enumerate([regel.categorie, regel.art_nr_jumbo, regel.omschrijving,
+                                 regel.ib_omschrijving, regel.eenheid], 1):
+            ws.cell(r, c, val)
+        ws.cell(r, ib_cols[0], regel.ib_aantal if _is_num(regel.ib_aantal) else None)
+        ws.cell(r, ib_cols[1], regel.ib_prijs if _is_num(regel.ib_prijs) else None)
+        ws.cell(r, ib_cols[2], f'=IF(OR({ia}{r}="",{ip}{r}=""),0,{ia}{r}*{ip}{r})')
+        refs = []
+        for i, (aantal, prijs) in enumerate(regel.offertes):
+            ca, cp, ct, cv = off_cols[i]
+            ws.cell(r, ca, aantal)
+            ws.cell(r, cp, prijs)
+            ws.cell(r, ct, f'=IF(OR({L(ca)}{r}="",{L(cp)}{r}=""),0,{L(ca)}{r}*{L(cp)}{r})')
+            ws.cell(r, cv, f"={L(ct)}{r}-{it}{r}")
+            refs.append(f"{L(ct)}{r}")
+        ws.cell(r, col_best, _xl_laagste_formula(namen, refs))
+        ws.cell(r, col_note, regel.opmerking or None)
+        for c in range(1, col_note + 1):
+            cell = ws.cell(r, c)
+            cell.font, cell.border, cell.alignment = f_norm, border, wrap
+        for c in (ib_cols[0], *[oc[0] for oc in off_cols]):
+            ws.cell(r, c).number_format = NUM
+        for c in (ib_cols[1], ib_cols[2], *[x for oc in off_cols for x in oc[1:]]):
+            ws.cell(r, c).number_format = EUR
+        r += 1
+    last = max(r - 1, first)
+    ws.cell(r, 1, "Totaal")
+    for c in (ib_cols[2], *[x for oc in off_cols for x in oc[2:]]):
+        ws.cell(r, c, f"=SUM({L(c)}{first}:{L(c)}{last})").number_format = EUR
+    for c in range(1, col_note + 1):
+        ws.cell(r, c).font, ws.cell(r, c).fill, ws.cell(r, c).border = f_bold, fill_tot, border
+
+    tot_cols = [L(oc[2]) for oc in off_cols]
+    for col in tot_cols:
+        ws.conditional_formatting.add(f"{col}{first}:{col}{last}", lowest_rule(col, first, tot_cols))
+    widths = {1: 30, 2: 13, 3: 44, 4: 44, 5: 8, col_best: 16, col_note: 34}
+    for c in range(1, col_note + 1):
+        ws.column_dimensions[L(c)].width = widths.get(c, 13)
+    ws.freeze_panes = ws.cell(first, 4)
+    ws.auto_filter.ref = f"A5:{L(col_note)}{last}"
+
+    # ── NRFP ──
+    wn.cell(1, 1, "NRFP / Buiten RFP — posities niet in de RFP").font = f_title
+    for c, t in enumerate(["Offerte", "Code", "Omschrijving", "Prijs", "Aantal", "Totaal"], 1):
+        head(wn.cell(3, c, t))
+    nr = 4
+    for naam, items in zip(namen, v.nrfp, strict=True):
+        for item in items:
+            for c, val in enumerate([naam, item.code, item.omschrijving, item.prijs, item.aantal, item.totaal], 1):
+                cell = wn.cell(nr, c, val)
+                cell.font, cell.border = f_norm, border
+            for c, fmt in ((4, EUR), (5, NUM), (6, EUR)):
+                wn.cell(nr, c).number_format = fmt
+            nr += 1
+    nrfp_last = max(nr - 1, 4)
+    for c, w in zip(range(1, 7), (14, 14, 60, 13, 9, 13), strict=True):
+        wn.column_dimensions[L(c)].width = w
+    wn.freeze_panes = "A4"
+
+    # ── Samenvatting ──
+    s.cell(1, 1, "Offertevergelijking Koel Installatie").font = f_title
+    info = [("IB-werkboek", v.ib_bestand)] + [(f"Offerte {n}", b) for n, b in zip(namen, v.bestanden, strict=True)]
+    if gemaakt_op:
+        info.append(("Gemaakt op", gemaakt_op))
+    for i, (k, val) in enumerate(info):
+        s.cell(3 + i, 1, k).font = f_bold
+        s.cell(3 + i, 2, val).font = f_norm
+    hr = 4 + len(info)
+    heads = (["Categorie", "IB (Budget)"] + namen + [f"{n} − IB" for n in namen]
+             + [f"{n} t.o.v. IB" for n in namen] + ["Laagste"])
+    for c, t in enumerate(heads, 1):
+        head(s.cell(hr, c, t))
+    cat_rng = f"Vergelijking!$A${first}:$A${last}"
+    sr = first_sum = hr + 1
+    budget_rows = set()
+    for cat in v.categorieen:
+        s.cell(sr, 1, cat)
+        if cat in v.ib_categorie_totalen:
+            s.cell(sr, 2, v.ib_categorie_totalen[cat])
+            s.cell(sr, 2).comment = Comment(
+                f"Uit het IB Budget-tabblad, subtotaal-regel(s) {v.ib_categorie_codes.get(cat, '')} — "
+                "zelfde bron als 'Totaal per categorie' in de app.", "Offerte Vergelijker")
+            budget_rows.add(sr)
+        else:
+            s.cell(sr, 2, f"=SUMIFS(Vergelijking!${it}${first}:${it}${last},{cat_rng},$A{sr})")
+        for i, col in enumerate(tot_cols):
+            s.cell(sr, 3 + i, f"=SUMIFS(Vergelijking!${col}${first}:${col}${last},{cat_rng},$A{sr})")
+        sr += 1
+    last_cat = sr - 1
+    nrfp_row = sr
+    s.cell(sr, 1, "NRFP / Buiten RFP")
+    s.cell(sr, 2, 0)
+    s.cell(sr, 2).comment = Comment("Posities buiten de RFP staan niet in het IB.", "Offerte Vergelijker")
+    for i, naam in enumerate(namen):
+        s.cell(sr, 3 + i, f'=SUMIFS(NRFP!$F$4:$F${nrfp_last},NRFP!$A$4:$A${nrfp_last},"{naam}")')
+    tot1, tot2 = sr + 1, sr + 2
+    s.cell(tot1, 1, "Totaal excl. NRFP")
+    s.cell(tot2, 1, "Totaal incl. NRFP")
+    for c in range(2, 3 + n_off):
+        s.cell(tot1, c, f"=SUM({L(c)}{first_sum}:{L(c)}{last_cat})")
+        s.cell(tot2, c, f"={L(c)}{tot1}+{L(c)}{nrfp_row}")
+
+    off_letters = [L(3 + i) for i in range(n_off)]
+    for row in range(first_sum, tot2 + 1):
+        for i, oc in enumerate(off_letters):
+            s.cell(row, 3 + n_off + i, f"={oc}{row}-$B{row}")
+            s.cell(row, 3 + 2 * n_off + i, f'=IF($B{row}=0,"",{oc}{row}/$B{row}-1)')
+        if row != nrfp_row:  # fewer extras isn't a better price
+            s.cell(row, 3 + 3 * n_off, _xl_laagste_formula(namen, [f"{oc}{row}" for oc in off_letters]))
+            for oc in off_letters:
+                s.conditional_formatting.add(f"{oc}{row}", lowest_rule(oc, row, off_letters))
+        for c in range(1, len(heads) + 1):
+            cell = s.cell(row, c)
+            cell.font = f_input if (c == 2 and row in budget_rows) else (f_bold if row >= tot1 else f_norm)
+            cell.border = border
+            if 2 <= c < 3 + 2 * n_off:
+                cell.number_format = EUR
+            elif 3 + 2 * n_off <= c < 3 + 3 * n_off:
+                cell.number_format = PCT
+            if row >= tot1:
+                cell.fill = fill_tot
+
+    notes = [
+        "Toelichting",
+        "• IB (Budget): waar bekend het subtotaal van de bijbehorende Budget-regel (blauw, zie celopmerking); "
+        "anders de som van de IB-regels op het tabblad Vergelijking.",
+        "• Offertebedragen = Aantal × (Prijs materiaal + Arbeidskosten) per regel, alleen regels met een ingevuld aantal.",
+        "• Groen = laagste offerte. 'Alleen …' = de andere partij(en) hebben hier niets geoffreerd "
+        "(scope-verschil, geen prijsvoordeel).",
+        "• Een verschil hoeft geen fout te zijn: partijen kunnen een andere variant, eenheid of scope hebben gekozen — "
+        "controleer de regels op het tabblad Vergelijking.",
+    ]
+    for i, t in enumerate(notes):
+        s.cell(tot2 + 2 + i, 1, t).font = f_bold if i == 0 else f_note
+    s.column_dimensions["A"].width = 46
+    for c in range(2, len(heads) + 1):
+        s.column_dimensions[L(c)].width = 16
+    s.freeze_panes = s.cell(hr + 1, 2)
+
+    for sheet in (s, ws, wn):
+        sheet.sheet_view.showGridLines = False
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
