@@ -1,3 +1,6 @@
+import io
+
+import openpyxl
 import pandas as pd
 import pytest
 
@@ -9,6 +12,8 @@ from matching_aannemer import (
     build_aannemer_df,
     build_aannemer_vergelijking,
     get_aannemer_totaal_ib,
+    parse_excel,
+    read_offerte,
     match_aannemer_budget,
 )
 
@@ -233,3 +238,55 @@ def test_build_aannemer_vergelijking_uses_budget_totaal_and_skips_nrfp():
     assert wand.opmerking == "fuzzy match 81%"
     assert los.ib_totaal == 0 and los.opmerking == "geen IB-match"
     assert v.ib_categorie_totalen == {"Pos 1 Kozijnen en deuren": 999.0}
+
+
+# ─── Excel offerte ───────────────────────────────────────────────────────────
+
+_OFFERTE_HEADER = ["Art. nr.  Jumbo", "Manual nr", "Art. nr. leverancier", "Groep", "Omschrijving Item", "Toelichting",
+                   "Eenheid", "Aantal", "Materiaalkosten per eenheid", "normtijd in minuten per eenheid",
+                   "Tarief per uur", "Prijs per eenheid (arbeid & materiaal)", "Totale uren in decimalen",
+                   "Totale materiaalkosten", "Arbeid Totaal", "Totale waarde offerte", "Opmerkingen"]
+
+
+def _offerte_workbook() -> bytes:
+    wb = openpyxl.Workbook()
+    rfp = wb.active
+    rfp.title = "Bidsheet"  # RFP template: also has 'Art. nr. Jumbo' header rows, but another layout
+    rfp.append(["Art. nr.  Jumbo", "Manual nr", "Art. nr. leverancier", "Pos 1 Kozijnen en deuren",
+                "Omschrijving Item", "toelichting", "Eenheid", "netto materiaalkosten per eenheid"])
+    rfp.append(["jum-AA-0001", None, None, "Pos 1 Kozijnen en deuren", "RFP-regel", None, "Stuk", 90.8])
+    ws = wb.create_sheet("vertaling bidsheet - offerte")
+    ws.append(["Prijsopgave Leverancier", "Van de Laar", "NRFP"])
+    ws.append(["Totaalprijs", 1234.5])  # summary block above the first header row
+    ws.append(_OFFERTE_HEADER)
+    ws.append(["NRFP-0010", None, None, "NRFP", None] + [None] * 6 + [0, 0, 0, 0, 0])   # empty placeholder
+    ws.append(["NRFP-0030", None, None, "NRFP", "Hulpstaal gascooler", None, "Stelpost", 1, 7500, None, None,
+               7500, 0, 7500, 0, 7500])
+    ws.append(_OFFERTE_HEADER)
+    ws.append(["jum-AA-0001", None, None, "Pos 1 Kozijnen en deuren", "Houten binnendeurkozijn", None, "Stuk",
+               3, 84.49, 60, 47.5, 131.99, 3, 253.47, 142.5, 395.97])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_dutch_number_passes_real_numbers_through():
+    assert _dutch_number(84.49) == 84.49   # an Excel cell — not '84.49' read the Dutch way (8449)
+    assert _dutch_number(3) == 3.0
+    assert _dutch_number(float("nan")) is None
+
+
+def test_parse_excel_reads_offerte_sheet_only():
+    items = parse_excel(_offerte_workbook())
+
+    assert [(i.pos, i.omschrijving) for i in items] == [
+        ("NRFP", "Hulpstaal gascooler"), ("Pos 1 Kozijnen en deuren", "Houten binnendeurkozijn")]
+    kozijn = items[1]
+    assert kozijn.art_nr_jumbo == "jum-AA-0001" and kozijn.eenheid == "Stuk"
+    assert kozijn.aantal == 3.0 and kozijn.prijs_pe == 131.99 and kozijn.totaal == 395.97
+
+
+def test_read_offerte_excel_returns_leverancier():
+    items, leverancier = read_offerte(_offerte_workbook(), "Offerte Afbouw FvdL.xlsx")
+    assert leverancier == "Van de Laar"
+    assert len(items) == 2

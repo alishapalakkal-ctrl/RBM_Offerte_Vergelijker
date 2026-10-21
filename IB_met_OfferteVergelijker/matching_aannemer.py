@@ -30,7 +30,13 @@ from matching_koeling import (
     build_categorie_totalen,
     load_budget_df,
 )
-from vergelijking import OfferteVergelijking, VergelijkingRegel, categorieen_in_volgorde, match_opmerking
+from vergelijking import (
+    OfferteVergelijking,
+    VergelijkingRegel,
+    categorieen_in_volgorde,
+    leverancier_uit_rijen,
+    match_opmerking,
+)
 
 if HAS_RAPIDFUZZ:
     from rapidfuzz import fuzz
@@ -49,7 +55,9 @@ __all__ = [
     "load_budget_df",
     "load_categorie_budget_codes",
     "match_aannemer_budget",
+    "parse_excel",
     "parse_pdf",
+    "read_offerte",
 ]
 
 
@@ -133,9 +141,12 @@ def _dutch_number(s) -> Optional[float]:
     stray space *inside* digit groups for this PDF's font (verified against
     the real file), so all internal whitespace must be stripped, not just
     trimmed, before applying Dutch decimal conversion ('.' thousands, ','
-    decimal). Blank cells render as a bare '-'."""
+    decimal). Blank cells render as a bare '-'. A real number (an Excel
+    cell) passes through as-is — '84.49' as text would otherwise read 8449."""
     if s is None:
         return None
+    if isinstance(s, (int, float)):
+        return None if pd.isna(s) else float(s)
     s = _WS_RE.sub("", str(s)).replace("€", "")
     if s in ("", "-"):
         return None
@@ -155,7 +166,9 @@ _HEADER_COL = {
 
 
 def _is_header_row(raw_row: list) -> bool:
-    return bool(raw_row) and str(raw_row[0] or "").strip() == "Art. nr. Jumbo"
+    # The Excel header reads 'Art. nr.  Jumbo' (double space), the PDF's
+    # 'Art. nr. Jumbo' — compare with whitespace collapsed.
+    return bool(raw_row) and _WS_RE.sub(" ", str(raw_row[0] or "")).strip() == "Art. nr. Jumbo"
 
 
 def _parse_table_row(raw_row: list, row_num: int, page: int) -> Optional[OfferteItem]:
@@ -217,6 +230,69 @@ def parse_pdf(file_bytes: bytes) -> List[OfferteItem]:
                     if item is not None:
                         items.append(item)
     return items
+
+
+#: 0-based column of 'Totale waarde offerte' in the offerte layout — used to
+#: tell the 'vertaling bidsheet - offerte' sheet apart from the workbook's
+#: 'Bidsheet' (RFP) sheet, which has its own 'Art. nr. Jumbo' header rows but
+#: a different column layout.
+_COL_TOTAAL_HEADER = _HEADER_COL["totaal"]
+
+
+def _excel_rows(file_bytes: bytes):
+    """(row number, cells) of the workbook's offerte sheet — the sheet whose
+    'Art. nr. Jumbo' header row has 'Totale waarde offerte' in the Totaal
+    column, preferring a sheet named '…offerte' — with NaN cells as None.
+    Empty when no sheet has that layout."""
+    sheets = pd.read_excel(io.BytesIO(file_bytes), sheet_name=None, header=None, engine="openpyxl")
+    ordered = sorted(sheets.items(), key=lambda kv: "offerte" not in kv[0].lower())
+    for _name, df in ordered:
+        rows = [[None if (isinstance(v, float) and pd.isna(v)) else v for v in raw] for raw in df.values.tolist()]
+        for raw in rows:
+            if _is_header_row(raw) and len(raw) > _COL_TOTAAL_HEADER and                     _WS_RE.sub(" ", str(raw[_COL_TOTAAL_HEADER] or "")).strip().lower() == "totale waarde offerte":
+                return list(enumerate(rows, start=1))
+    return []
+
+
+def parse_excel(file_bytes: bytes) -> List[OfferteItem]:
+    """Same as parse_pdf, for the Excel the PDF is printed from (sheet
+    'vertaling bidsheet - offerte'): its 17 columns sit at the same
+    positions as _HEADER_COL (verified against Van de Laar's Afbouw
+    workbooks), so every row after the first header row goes through the
+    same _parse_table_row. The summary block above the first header row is
+    skipped."""
+    items: List[OfferteItem] = []
+    seen_header = False
+    for r, raw in _excel_rows(file_bytes):
+        if _is_header_row(raw):
+            seen_header = True
+            continue
+        if not seen_header:
+            continue
+        item = _parse_table_row(raw, r, page=0)
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def _pdf_table_rows(file_bytes: bytes):
+    r = 0
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            for table in page.extract_tables():
+                for raw in table:
+                    r += 1
+                    yield r, raw
+
+
+def read_offerte(file_bytes: bytes, filename: str) -> tuple:
+    """(offerte items, leverancier) from the offerte as PDF or as Excel —
+    the leverancier from its 'Prijsopgave Leverancier' line, else 'Offerte'."""
+    if filename.lower().endswith(".pdf"):
+        items, rows = parse_pdf(file_bytes), _pdf_table_rows(file_bytes)
+    else:
+        items, rows = parse_excel(file_bytes), _excel_rows(file_bytes)
+    return items, leverancier_uit_rijen(rows) or "Offerte"
 
 
 #: Persistent Art.Nr.Jumbo -> canonical Budget omschrijving lookup, keyed the

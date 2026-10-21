@@ -20,17 +20,26 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import pandas as pd
+import pdfplumber
 
 from matching_koeling import (
     HAS_RAPIDFUZZ,
     _budget_code_totals,
     _budget_prijs_totaal,
     _budget_row,
+    _nh,
     _norm_text,
+    _pdf_cell,
     build_categorie_totalen,
     load_budget_df,
 )
-from vergelijking import OfferteVergelijking, VergelijkingRegel, categorieen_in_volgorde, match_opmerking
+from vergelijking import (
+    OfferteVergelijking,
+    VergelijkingRegel,
+    categorieen_in_volgorde,
+    leverancier_uit_rijen,
+    match_opmerking,
+)
 
 if HAS_RAPIDFUZZ:
     from rapidfuzz import fuzz
@@ -49,7 +58,9 @@ __all__ = [
     "load_budget_df",
     "load_categorie_budget_codes",
     "match_sloopwerk_budget",
+    "parse_pdf",
     "read_offerte",
+    "read_offerte_file",
 ]
 
 
@@ -144,6 +155,96 @@ def read_offerte(file_bytes: bytes, sheet_name: str = OFFERTE_SHEET_NAME) -> Lis
             totaal=float(totaal) if pd.notna(totaal) else None,
         ))
     return items
+
+
+#: Header labels (normalized: lowercase, alnum only) of the item table in a
+#: PDF print of the offerte. The print hides columns the Excel has (Manual
+#: nr, Art. nr. leverancier), so unlike read_offerte's fixed _COL_*
+#: positions, the PDF's columns are found by name per header row.
+_PDF_HEADER_KEYS = {
+    "art_nr_jumbo": lambda n: n == "artnrjumbo",
+    "groep": lambda n: n == "groep",
+    "omschrijving": lambda n: n == "omschrijvingitem",
+    "eenheid": lambda n: n == "eenheid",
+    "aantal": lambda n: n == "aantalpereenheid",
+    "totaal": lambda n: n.startswith("waardeoffertetot"),
+}
+
+
+def _parse_pdf_rows(rows) -> List[OfferteItem]:
+    """Item rows of a PDF-printed offerte (e.g. Van de Laar's 'Demontage
+    template offerte en eindafrekening', Rotterdam P250324): each table
+    header row sets the column mapping, then a row counts when Groep and
+    Omschrijving are both filled — the same rule as read_offerte. Tables
+    without a Groep column (the eindafrekening half, summary boxes) never
+    set a mapping; their rows are also narrower than the item table, which
+    is how they're kept out when they follow it — a continuation of the
+    item table on the next page has the same width and is still read."""
+    items: List[OfferteItem] = []
+    cols: Dict[str, int] = {}
+    width = 0
+    for r, raw in rows:
+        normed = [_nh(v) for v in raw]
+        if normed and normed[0] == "artnrjumbo":
+            cols = {}
+            for key, test in _PDF_HEADER_KEYS.items():
+                for c, n in enumerate(normed):
+                    if test(n):
+                        cols[key] = c
+                        break
+            if "groep" not in cols or "omschrijving" not in cols:
+                cols = {}
+            width = len(raw)
+            continue
+        if not cols or len(raw) != width:
+            continue
+
+        def cell(key):
+            c = cols.get(key)
+            return _pdf_cell(raw[c]) if c is not None and c < len(raw) else None
+
+        groep, omschrijving = cell("groep"), cell("omschrijving")
+        if not isinstance(groep, str) or not isinstance(omschrijving, str):
+            continue
+        art_nr, aantal, totaal, eenheid = cell("art_nr_jumbo"), cell("aantal"), cell("totaal"), cell("eenheid")
+        items.append(OfferteItem(
+            row=r, groep=groep, art_nr_jumbo=str(art_nr) if art_nr is not None else None,
+            manual_nr=None, art_nr_leverancier=None, omschrijving=omschrijving,
+            eenheid=eenheid if isinstance(eenheid, str) else None,
+            aantal=aantal if isinstance(aantal, float) else None,
+            totaal=totaal if isinstance(totaal, float) else None,
+        ))
+    return items
+
+
+def _pdf_table_rows(file_bytes: bytes):
+    r = 0
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page in pdf.pages:
+            for table in page.extract_tables():
+                for raw in table:
+                    r += 1
+                    yield r, raw
+
+
+def parse_pdf(file_bytes: bytes) -> List[OfferteItem]:
+    """Same as read_offerte, for the offerte printed to PDF."""
+    return _parse_pdf_rows(_pdf_table_rows(file_bytes))
+
+
+def read_offerte_file(file_bytes: bytes, filename: str) -> tuple:
+    """(offerte items, leverancier) from the offerte as Excel or as PDF —
+    the leverancier from its 'Prijsopgave Leverancier' line, else 'Offerte'."""
+    if filename.lower().endswith(".pdf"):
+        return parse_pdf(file_bytes), leverancier_uit_rijen(_pdf_table_rows(file_bytes)) or "Offerte"
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=OFFERTE_SHEET_NAME, header=None,
+                           engine="openpyxl", nrows=40)
+        rows = enumerate(df.values.tolist(), start=1)
+        leverancier = leverancier_uit_rijen(rows)
+    except ValueError:
+        leverancier = None
+    return read_offerte(file_bytes), leverancier or "Offerte"
 
 
 ART_NR_MAPPING_DIR = Path(__file__).parent / "data"

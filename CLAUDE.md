@@ -9,10 +9,11 @@ Offerte Vergelijker — Streamlit app that compares supplier PDF offertes agains
 
 ## Structure
 - `IB_met_OfferteVergelijker/Home.py` — landing page, links to each leverancier section
-- `IB_met_OfferteVergelijker/common.py` — shared page config, styling and header helpers (use these on every page)
+- `IB_met_OfferteVergelijker/common.py` — shared page config, styling and header helpers, plus `show_alle_resultaten` (use these on every page)
 - `IB_met_OfferteVergelijker/pages/1_🟡_Van_Keulen.py` — Van Keulen page: Streamlit UI only
 - `IB_met_OfferteVergelijker/pages/2_🧊_Koeling.py` — Koeling page: Streamlit UI only (Koel Installatie + Koel Meubel sub-flows)
-- `IB_met_OfferteVergelijker/matching_van_keulen.py` / `matching_koeling.py` — the actual parsing/matching logic for each page, kept Streamlit-free so it's unit-testable (see Verification)
+- `IB_met_OfferteVergelijker/matching_van_keulen.py` / `matching_koeling.py` / `matching_aannemer.py` / `matching_sloopwerk.py` — the actual parsing/matching logic for each page, kept Streamlit-free so it's unit-testable (see Verification)
+- `IB_met_OfferteVergelijker/vergelijking.py` — the shared, Streamlit-free offerte-vs-IB comparison model (`VergelijkingRegel` / `OfferteVergelijking`, `vergelijking_regels_df`, `leverancier_uit_rijen`). Each section's `matching_*` module builds an `OfferteVergelijking` from its own matches (`build_offerte_vergelijking` / `build_aannemer_vergelijking` / `build_sloopwerk_vergelijking`), and every page's "📋 Alle resultaten" tab renders it via `common.show_alle_resultaten` (the layout of the Excel export's Vergelijking sheet) — add new comparison views on top of this model rather than per page
 - `IB_met_OfferteVergelijker/data/` — article-number mapping CSVs per leverancier
 - `IB_met_OfferteVergelijker/assets/` — logos/icons
 - `IB_met_OfferteVergelijker/startup.sh` — Azure App Service startup command

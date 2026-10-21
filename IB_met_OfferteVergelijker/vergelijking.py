@@ -9,6 +9,7 @@ common.show_alle_resultaten — the layout of the Excel export's Vergelijking
 sheet.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -67,6 +68,24 @@ def categorieen_in_volgorde(regels: List[VergelijkingRegel]) -> List[str]:
         if r.categorie not in out:
             out.append(r.categorie)
     return out
+
+
+def leverancier_uit_rijen(rows, max_rij: int = 40) -> Optional[str]:
+    """The leverancier from a bidsheet's 'Prijsopgave Leverancier' line near
+    the top (e.g. 'Van Wijnen', 'Van de Laar Sloopwerken') — the label sits
+    in col 0 or col 1 depending on the template, the name in the next filled
+    text cell. `rows` yields (row number, cells); None when there's no such
+    line."""
+    for r, cells in rows:
+        if r > max_rij:
+            break
+        cells = list(cells)
+        for i, c in enumerate(cells):
+            if re.sub(r"[^a-z]", "", str(c or "").lower()) == "prijsopgaveleverancier":
+                for v in cells[i + 1:]:
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()[:30]
+    return None
 
 
 def match_opmerking(m) -> str:

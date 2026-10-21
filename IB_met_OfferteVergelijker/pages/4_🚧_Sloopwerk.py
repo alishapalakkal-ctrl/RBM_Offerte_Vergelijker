@@ -4,7 +4,8 @@ Offerte Vergelijker – Sloopwerk section.
 Run via the app entrypoint:  streamlit run IB_met_OfferteVergelijker/Home.py
 
 Compares a demolition contractor's offerte (e.g. Van de Laar 'vertaling
-bidsheet' — an Excel workbook) against the IB macro-werkboek's Budget sheet,
+bidsheet' — the Excel workbook, or a PDF printed from it) against the IB
+macro-werkboek's Budget sheet,
 section A.01 (Sloopwerk). Matching is description-based (fuzzy), restricted
 per Groep/categorie — see matching_sloopwerk.py for the details.
 """
@@ -31,7 +32,7 @@ from matching_sloopwerk import (
     load_budget_df,
     load_categorie_budget_codes,
     match_sloopwerk_budget,
-    read_offerte,
+    read_offerte_file,
 )
 
 configure_page("Offerte Vergelijker – Sloopwerk", icon=SLOOPWERK_ICON)
@@ -78,7 +79,7 @@ def _analyze_sloopwerk(ib_file, offerte_file):
     offerte_bytes = offerte_file.read()
 
     with st.spinner("Analyseren…"):
-        offerte = read_offerte(offerte_bytes)
+        offerte, leverancier = read_offerte_file(offerte_bytes, offerte_file.name)
         bdf = load_budget_df(ib_bytes)
         categorie_mapping = load_categorie_budget_codes()
         matches = match_sloopwerk_budget(offerte, bdf, categorie_mapping)
@@ -91,7 +92,7 @@ def _analyze_sloopwerk(ib_file, offerte_file):
 
     st.session_state.sloopwerk_df = df
     st.session_state.sloopwerk_vergelijking = build_sloopwerk_vergelijking(
-        offerte, matches, categorie_totalen, bestand=offerte_file.name,
+        offerte, matches, categorie_totalen, naam=leverancier, bestand=offerte_file.name,
     )
     st.session_state.sloopwerk_categorie_totalen = categorie_totalen
     st.session_state.sloopwerk_totaal_ib_row = totaal_ib_row
@@ -224,8 +225,9 @@ with st.sidebar:
         help="Het macro-werkboek met 'IB' in de bestandsnaam, bevat de sheet 'Budget'.",
     )
     offerte_file = st.file_uploader(
-        "Offerte (.xlsm)", type=["xlsm", "xlsx"],
-        help="De 'vertaling bidsheet' offerte van de sloopaannemer (bijv. Van de Laar).",
+        "Offerte (Excel of .pdf)", type=["xlsm", "xlsx", "pdf"],
+        help="De 'vertaling bidsheet' offerte van de sloopaannemer (bijv. Van de Laar) — als Excel, of als PDF "
+             "afgedrukt uit hetzelfde template.",
     )
     st.caption("Matching gebeurt via fuzzy tekst-matching, per categorie (Groep) beperkt tot dezelfde IB-rubriek.")
     if st.button("▶ Analyseren", type="primary", use_container_width=True):

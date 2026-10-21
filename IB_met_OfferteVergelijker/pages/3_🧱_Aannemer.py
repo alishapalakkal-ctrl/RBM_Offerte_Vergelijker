@@ -3,8 +3,8 @@
 Offerte Vergelijker – Aannemer section.
 Run via the app entrypoint:  streamlit run IB_met_OfferteVergelijker/Home.py
 
-Compares a contractor's PDF offerte (e.g. Van Wijnen 'Afbouw', structurally a
-printed Excel bidsheet — same layout as Koeling's 'Offertetemplate KT') against
+Compares a contractor's offerte — the 'vertaling bidsheet' as PDF (e.g. Van
+Wijnen 'Afbouw') or as the Excel it's printed from (same columns) — against
 the IB macro-werkboek's Budget sheet. Unlike Koeling, the Budget rows for this
 section have no numeric-prefix bridge to the offerte's own Art.Nr.Jumbo, so
 matching is description-based (fuzzy, with a persistent CSV override) — see
@@ -34,7 +34,7 @@ from matching_aannemer import (
     load_budget_df,
     load_categorie_budget_codes,
     match_aannemer_budget,
-    parse_pdf,
+    read_offerte,
 )
 
 configure_page("Offerte Vergelijker – Aannemer", icon=AANNEMER_ICON)
@@ -76,12 +76,12 @@ def _style_aannemer(df: pd.DataFrame):
     )
 
 
-def _analyze_aannemer(ib_file, pdf_file):
+def _analyze_aannemer(ib_file, offerte_file):
     ib_bytes = ib_file.read()
-    pdf_bytes = pdf_file.read()
+    offerte_bytes = offerte_file.read()
 
     with st.spinner("Analyseren…"):
-        offerte = parse_pdf(pdf_bytes)
+        offerte, leverancier = read_offerte(offerte_bytes, offerte_file.name)
         mapping = load_art_nr_mapping("vanwijnen")
         bdf = load_budget_df(ib_bytes)
         matches = match_aannemer_budget(offerte, bdf, mapping)
@@ -95,7 +95,7 @@ def _analyze_aannemer(ib_file, pdf_file):
 
     st.session_state.aannemer_df = df
     st.session_state.aannemer_vergelijking = build_aannemer_vergelijking(
-        offerte, matches, categorie_totalen, bestand=pdf_file.name,
+        offerte, matches, categorie_totalen, naam=leverancier, bestand=offerte_file.name,
     )
     st.session_state.aannemer_categorie_totalen = categorie_totalen
     st.session_state.aannemer_totaal_ib_row = totaal_ib_row
@@ -256,19 +256,20 @@ with st.sidebar:
         "IB macro-werkboek (.xlsm)", type=["xlsm"],
         help="Het macro-werkboek met 'IB' in de bestandsnaam, bevat de sheet 'Budget'.",
     )
-    pdf_file = st.file_uploader(
-        "Offerte (.pdf)", type=["pdf"],
-        help="De PDF-offerte van de aannemer (bijv. Van Wijnen Afbouw bidsheet).",
+    offerte_file = st.file_uploader(
+        "Offerte (.pdf of Excel)", type=["pdf", "xlsx", "xlsm"],
+        help="De offerte van de aannemer — de 'vertaling bidsheet' als PDF (bijv. Van Wijnen Afbouw) of als "
+             "Excel (tabblad 'vertaling bidsheet - offerte').",
     )
     st.caption(
         "Matching gebeurt via een handmatig bevestigde Art.Nr.Jumbo → Budget-omschrijving mapping, met "
         "fuzzy tekst-matching als terugval voor de rest."
     )
     if st.button("▶ Analyseren", type="primary", use_container_width=True):
-        if not ib_file or not pdf_file:
-            st.error("Upload zowel het **IB macro-werkboek** als de **PDF-offerte**.")
+        if not ib_file or not offerte_file:
+            st.error("Upload zowel het **IB macro-werkboek** als de **offerte**.")
         else:
-            _analyze_aannemer(ib_file, pdf_file)
+            _analyze_aannemer(ib_file, offerte_file)
 
 if st.session_state.aannemer_df is None:
     st.info("Upload beide bestanden via de zijbalk en klik op **Analyseren** om te beginnen.")

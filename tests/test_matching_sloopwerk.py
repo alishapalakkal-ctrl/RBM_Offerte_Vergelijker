@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from matching_sloopwerk import (
+    _parse_pdf_rows,
     HAS_RAPIDFUZZ,
     BudgetMatch,
     OfferteItem,
@@ -201,3 +202,37 @@ def test_build_sloopwerk_vergelijking_derives_prijs_from_totaal():
     assert klic.ib_totaal == 120.0 and klic.opmerking == "fuzzy match 88%"
     assert melding.offertes == [(1, None)] and melding.offerte_totaal(0) == 0
     assert melding.opmerking == "geen IB-match"
+
+
+# ─── PDF offerte ─────────────────────────────────────────────────────────────
+
+_PDF_HEADER = ["Art. nr. Jumbo", "Groep", "Omschrijving Item", "Prijspeil", "Eenheid", "Aantal Personen/ stuks",
+               "Aantal per eenheid", "ARBEID normtijd in minuten", "Prijs per eenheid (arbeid & materiaal)",
+               "Waarde offerte Totaal", "Opmerkingen"]
+
+
+def test_parse_pdf_rows_maps_columns_by_header_name():
+    # The PDF print hides Manual nr / Art. nr. leverancier, so positions differ
+    # from the Excel; amounts come as pdfplumber text ('€ 5 39,00').
+    rows = [
+        (1, ["Prijsopgave Leverancier", "Van de Laar Sloopwerken"]),
+        (2, _PDF_HEADER),
+        (3, ["", "NRFP", "Stelpost beton- boor en zaagwerk", "", "Stelpost", "", "1", "", "€ 2 .500,00",
+             "€ 2 .500,00", ""]),
+        (4, _PDF_HEADER),
+        (5, ["No. 1", "Algemeen", "Calculatie: voorcalculatie", "", "Post", "enz.", "1", "420", "€ 5 39,00",
+             "€ 5 39,00", ""]),
+        (6, ["No. 9", "Opbrengsten", "Opbrengst koper", "", "kg", "", "1 20", "", "€ -7,86", "€ - 943,20", ""]),
+        # the eindafrekening table next to it: narrower, no Groep column
+        (7, ["Aantal Personen/ stuks", "Aantal per eenheid", "Prijs per eenheid", "Waarde offerte Totaal"]),
+        (8, ["enz.", "", "€ 5 39,00", "€ -"]),
+    ]
+    items = _parse_pdf_rows(rows)
+
+    assert [(i.groep, i.omschrijving) for i in items] == [
+        ("NRFP", "Stelpost beton- boor en zaagwerk"), ("Algemeen", "Calculatie: voorcalculatie"),
+        ("Opbrengsten", "Opbrengst koper")]
+    assert items[0].art_nr_jumbo is None and items[0].totaal == 2500.0
+    assert items[1].art_nr_jumbo == "No. 1" and items[1].eenheid == "Post"
+    assert items[1].aantal == 1.0 and items[1].totaal == 539.0
+    assert items[2].aantal == 120.0 and items[2].totaal == -943.2
