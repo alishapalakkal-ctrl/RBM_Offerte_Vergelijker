@@ -30,6 +30,8 @@ from matching_koeling import (
     parse_buiten_rfp,
     parse_ib,
     parse_offerte,
+    unique_namen,
+    vergelijking_regels_df,
     vergelijking_samenvatting,
     vergelijking_to_xlsx,
 )
@@ -464,6 +466,29 @@ def test_vergelijking_to_xlsx_single_offerte_has_no_laagste():
     sam = vergelijking_samenvatting(v)
     assert "Laagste" not in sam.columns
     assert sam.set_index("Categorie").loc["Totaal incl. NRFP", "Frimex"] == pytest.approx(2500 + 6000 + 200)
+
+
+def test_vergelijking_regels_df_mirrors_excel_layout():
+    rdf = vergelijking_regels_df(_vergelijking())
+
+    assert list(rdf.columns) == [
+        "Categorie", "Art.Nr.Jumbo", "Omschrijving (offerte)", "IB omschrijving (Budget)", "Eenheid",
+        "IB Aantal", "IB Prijs p.e.", "IB Totaal",
+        "Frimex Aantal", "Frimex Prijs p.e.", "Frimex Totaal", "Frimex − IB",
+        "Carrier Aantal", "Carrier Prijs p.e.", "Carrier Totaal", "Carrier − IB",
+        "Laagste offerte", "Opmerking",
+    ]
+    koelcel = rdf.iloc[0]
+    assert koelcel["Frimex Totaal"] == 2000.0 and koelcel["Frimex − IB"] == pytest.approx(100.0)
+    assert koelcel["Laagste offerte"] == "Carrier"
+    tot = rdf.iloc[-1]
+    assert tot["Categorie"] == "Totaal"
+    assert tot["Frimex Totaal"] == pytest.approx(2000 + 500 + 6000)
+    assert tot["IB Totaal"] == pytest.approx(2 * 950 + 600)
+
+
+def test_unique_namen_suffixes_duplicates():
+    assert unique_namen(["Frimex", "Carrier", "Frimex", "Frimex"]) == ["Frimex", "Carrier", "Frimex (2)", "Frimex (3)"]
 
 
 def test_bidsheet_leverancier_reads_leverancier_line():

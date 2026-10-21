@@ -1278,6 +1278,51 @@ def vergelijking_samenvatting(v: OfferteVergelijking) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+def unique_namen(namen: List[str]) -> List[str]:
+    """Make offerte names unique for use as column headers — a second
+    'Frimex' (e.g. a revised offerte) becomes 'Frimex (2)'."""
+    out: List[str] = []
+    for n in namen:
+        naam, k = n, 2
+        while naam in out:
+            naam, k = f"{n} ({k})", k + 1
+        out.append(naam)
+    return out
+
+
+def vergelijking_regels_df(v: OfferteVergelijking, totaal_rij: bool = True) -> pd.DataFrame:
+    """Per-line table laid out like vergelijking_to_xlsx's Vergelijking sheet:
+    IB aantal/prijs/totaal, then per offerte aantal/prijs/totaal/verschil
+    t.o.v. IB, then the lowest offerte (only with 2+ offertes) and the
+    match notes — plus a closing 'Totaal' row like the Excel's."""
+    ranked = len(v.namen) > 1
+    out = []
+    for r in v.regels:
+        rec = {"Categorie": r.categorie, "Art.Nr.Jumbo": r.art_nr_jumbo, "Omschrijving (offerte)": r.omschrijving,
+               "IB omschrijving (Budget)": r.ib_omschrijving, "Eenheid": r.eenheid,
+               "IB Aantal": r.ib_aantal, "IB Prijs p.e.": r.ib_prijs, "IB Totaal": r.ib_totaal}
+        totalen = [r.offerte_totaal(i) for i in range(len(v.namen))]
+        for i, n in enumerate(v.namen):
+            aantal, prijs = r.offertes[i]
+            rec[f"{n} Aantal"] = aantal
+            rec[f"{n} Prijs p.e."] = prijs
+            rec[f"{n} Totaal"] = totalen[i]
+            rec[f"{n} − IB"] = totalen[i] - r.ib_totaal
+        if ranked:
+            rec["Laagste offerte"] = _laagste(v.namen, totalen)
+        rec["Opmerking"] = r.opmerking
+        out.append(rec)
+    if totaal_rij and out:
+        tot = {c: None for c in out[0]}
+        tot["Categorie"] = "Totaal"
+        for c in ["IB Totaal", *[f"{n} {k}" for n in v.namen for k in ("Totaal", "− IB")]]:
+            tot[c] = sum(rec[c] for rec in out)
+        if ranked:
+            tot["Laagste offerte"] = _laagste(v.namen, [tot[f"{n} Totaal"] for n in v.namen])
+        out.append(tot)
+    return pd.DataFrame(out)
+
+
 def _xl_laagste_formula(namen: List[str], refs: List[str]) -> str:
     """Excel formula naming the lowest offerte among those with a totaal > 0
     ('Alleen X' when only one quoted), mirroring _laagste."""
