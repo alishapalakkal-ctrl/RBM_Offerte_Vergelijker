@@ -22,6 +22,7 @@ from matching_koeling import (
     build_buffetten_link,
     CATEGORIE_GROEP_LABEL,
     NrfpItem,
+    bidsheet_leverancier,
     build_installatie_df,
     build_offerte_vergelijking,
     guess_leverancier,
@@ -447,6 +448,35 @@ def test_vergelijking_to_xlsx_writes_formula_workbook():
     buffet_row = sam_rows["Categorie buffetten"]
     assert s.cell(buffet_row, 2).value == 5000.0                     # Budget subtotal as value
     assert s.cell(buffet_row, 3).value.startswith("=SUMIFS(Vergelijking!$K$")
+
+
+def test_vergelijking_to_xlsx_single_offerte_has_no_laagste():
+    v = _vergelijking()
+    v.namen, v.bestanden, v.nrfp = v.namen[:1], v.bestanden[:1], v.nrfp[:1]
+    for r in v.regels:
+        r.offertes = r.offertes[:1]
+    wb = openpyxl.load_workbook(io.BytesIO(vergelijking_to_xlsx(v)))
+
+    headers = {c.value for ws in wb for row in ws.iter_rows(max_row=12) for c in row if isinstance(c.value, str)}
+    assert "Laagste" not in headers and "Laagste offerte" not in headers
+    assert wb["Vergelijking"]["M4"].value == "Opmerking"  # right after the single offerte's 4 columns
+
+    sam = vergelijking_samenvatting(v)
+    assert "Laagste" not in sam.columns
+    assert sam.set_index("Categorie").loc["Totaal incl. NRFP", "Frimex"] == pytest.approx(2500 + 6000 + 200)
+
+
+def test_bidsheet_leverancier_reads_leverancier_line():
+    rows = [
+        ["Algemene informatie:"],
+        ["Leverancier", "Carrier Commercial Refrigeration"],
+        ["Categorie koelcellen", "Omschrijving Item", "Aantal"],
+    ]
+    assert bidsheet_leverancier(_xlsx_bytes("Bidsheet K", rows), "bidsheet.xlsx") == "Carrier"
+    rows[1] = ["Leverancier", "Koeltechniek Jansen B.V."]
+    assert bidsheet_leverancier(_xlsx_bytes("Bidsheet K", rows), "bidsheet.xlsx") == "Koeltechniek Jansen B.V."
+    # no Leverancier line -> filename
+    assert bidsheet_leverancier(_xlsx_bytes("Bidsheet K", rows[2:]), "Frimex bidsheet.xlsx") == "Frimex"
 
 
 def test_guess_leverancier_from_filename():

@@ -1042,14 +1042,42 @@ def pick_bid_sheet(sheetnames: List[str]) -> List[str]:
     return [s for s in sheetnames if "offertetemplate" in s.lower()] or list(sheetnames)
 
 
-def guess_leverancier(filename: str) -> str:
-    """Default offerte name from a bidsheet filename — a known leverancier
-    when the name mentions one, else the filename without extension."""
-    low = filename.lower()
+def _hint_leverancier(text: str) -> Optional[str]:
+    low = text.lower()
     for hint, naam in _LEVERANCIER_HINTS.items():
         if re.search(rf"(^|[^a-z]){hint}([^a-z]|$)", low):
             return naam
-    return re.sub(r"\.xlsx?$", "", filename, flags=re.IGNORECASE)[:30]
+    return None
+
+
+def guess_leverancier(filename: str) -> str:
+    """Default offerte name from a bidsheet filename — a known leverancier
+    when the name mentions one, else the filename without extension."""
+    return _hint_leverancier(filename) or re.sub(r"\.(xlsx?|pdf)$", "", filename, flags=re.IGNORECASE)[:30]
+
+
+def bidsheet_leverancier(file_bytes: bytes, filename: str) -> str:
+    """Offerte name from the bidsheet's own 'Leverancier' line near the top
+    (e.g. 'Frimex Installatie B.V.' -> 'Frimex', 'Carrier Commercial
+    Refrigeration' -> 'Carrier'), falling back to guess_leverancier — the
+    Hellevoetsluis PDF's filename doesn't mention the leverancier at all."""
+    try:
+        if is_pdf(filename):
+            rows = _rows_from_pdf(file_bytes)
+        else:
+            import openpyxl
+
+            sheet = pick_bid_sheet(openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True).sheetnames)[0]
+            rows = _rows_from_bytes(file_bytes, sheet)
+        for r, row in rows:
+            if r > 40:
+                break
+            if len(row) > 1 and _nh(row[0]) == "leverancier" and isinstance(row[1], str) and row[1].strip():
+                naam = row[1].strip()
+                return _hint_leverancier(naam) or naam[:30]
+    except Exception:  # a name is a convenience — never fail the export over it
+        pass
+    return guess_leverancier(filename)
 
 
 @dataclass
@@ -1244,24 +1272,8 @@ def vergelijking_samenvatting(v: OfferteVergelijking) -> pd.DataFrame:
         rec = {"Categorie": cat, "IB (Budget)": ib}
         rec.update({n: t for n, t in zip(v.namen, offs, strict=True)})
         rec.update({f"{n} − IB": t - ib for n, t in zip(v.namen, offs, strict=True)})
-        rec["Laagste"] = _laagste(v.namen, offs) if with_laagste else ""
-        out.append(rec)
-    return pd.DataFrame(out)
-
-
-def vergelijking_regels_df(v: OfferteVergelijking) -> pd.DataFrame:
-    """Flat per-line table for on-screen display."""
-    out = []
-    for r in v.regels:
-        rec = {"Categorie": r.categorie, "Art.Nr.Jumbo": r.art_nr_jumbo, "Omschrijving": r.omschrijving,
-               "IB Aantal": r.ib_aantal, "IB Prijs p.e.": r.ib_prijs, "IB Totaal": r.ib_totaal}
-        for i, n in enumerate(v.namen):
-            aantal, prijs = r.offertes[i]
-            rec[f"{n} Aantal"] = aantal
-            rec[f"{n} Prijs p.e."] = prijs
-            rec[f"{n} Totaal"] = r.offerte_totaal(i)
-        rec["Laagste"] = _laagste(v.namen, [r.offerte_totaal(i) for i in range(len(v.namen))])
-        rec["Opmerking"] = r.opmerking
+        if len(v.namen) > 1:  # with one offerte it would read 'Alleen X' everywhere
+            rec["Laagste"] = _laagste(v.namen, offs) if with_laagste else ""
         out.append(rec)
     return pd.DataFrame(out)
 
@@ -1326,11 +1338,15 @@ def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
     # ── Vergelijking ──
     ib_cols = (6, 7, 8)
     off_cols = [tuple(9 + 4 * i + k for k in range(4)) for i in range(n_off)]
-    col_best = 9 + 4 * n_off
-    col_note = col_best + 1
+    # 'Laagste offerte' and the green highlight only mean something with 2+
+    # offertes — a single offerte vs IB would read 'Alleen X' on every line.
+    ranked = n_off > 1
+    col_best = 9 + 4 * n_off if ranked else None
+    col_note = 9 + 4 * n_off + (1 if ranked else 0)
     ws.cell(1, 1, "Vergelijking per regel — Koel Installatie").font = f_title
     ws.cell(2, 1, "Regels met een aantal in minstens één offerte of in het IB, uitgelijnd op Art.Nr.Jumbo. "
-                  "Totaal = Aantal × Prijs p.e. (materiaal + arbeid); groen = laagste offerte op die regel.").font = f_note
+                  "Totaal = Aantal × Prijs p.e. (materiaal + arbeid)"
+                  + ("; groen = laagste offerte op die regel." if ranked else ".")).font = f_note
     for c, t in enumerate(["Categorie", "Art.Nr.Jumbo", "Omschrijving (offerte)", "IB omschrijving (Budget)",
                            "Eenheid"], 1):
         ws.merge_cells(start_row=4, start_column=c, end_row=5, end_column=c)
@@ -1344,7 +1360,7 @@ def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
         for c, t in zip(cols, subs, strict=True):
             head(ws.cell(4, c), fill, f_bold)
             head(ws.cell(5, c, t), fill, f_bold)
-    for c, t in ((col_best, "Laagste offerte"), (col_note, "Opmerking")):
+    for c, t in ([(col_best, "Laagste offerte")] if ranked else []) + [(col_note, "Opmerking")]:
         ws.merge_cells(start_row=4, start_column=c, end_row=5, end_column=c)
         head(ws.cell(4, c, t))
 
@@ -1366,7 +1382,8 @@ def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
             ws.cell(r, ct, f'=IF(OR({L(ca)}{r}="",{L(cp)}{r}=""),0,{L(ca)}{r}*{L(cp)}{r})')
             ws.cell(r, cv, f"={L(ct)}{r}-{it}{r}")
             refs.append(f"{L(ct)}{r}")
-        ws.cell(r, col_best, _xl_laagste_formula(namen, refs))
+        if ranked:
+            ws.cell(r, col_best, _xl_laagste_formula(namen, refs))
         ws.cell(r, col_note, regel.opmerking or None)
         for c in range(1, col_note + 1):
             cell = ws.cell(r, c)
@@ -1384,7 +1401,7 @@ def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
         ws.cell(r, c).font, ws.cell(r, c).fill, ws.cell(r, c).border = f_bold, fill_tot, border
 
     tot_cols = [L(oc[2]) for oc in off_cols]
-    for col in tot_cols:
+    for col in tot_cols if ranked else []:
         ws.conditional_formatting.add(f"{col}{first}:{col}{last}", lowest_rule(col, first, tot_cols))
     widths = {1: 30, 2: 13, 3: 44, 4: 44, 5: 8, col_best: 16, col_note: 34}
     for c in range(1, col_note + 1):
@@ -1420,7 +1437,7 @@ def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
         s.cell(3 + i, 2, val).font = f_norm
     hr = 4 + len(info)
     heads = (["Categorie", "IB (Budget)"] + namen + [f"{n} − IB" for n in namen]
-             + [f"{n} t.o.v. IB" for n in namen] + ["Laagste"])
+             + [f"{n} t.o.v. IB" for n in namen] + (["Laagste"] if ranked else []))
     for c, t in enumerate(heads, 1):
         head(s.cell(hr, c, t))
     cat_rng = f"Vergelijking!$A${first}:$A${last}"
@@ -1458,7 +1475,7 @@ def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
         for i, oc in enumerate(off_letters):
             s.cell(row, 3 + n_off + i, f"={oc}{row}-$B{row}")
             s.cell(row, 3 + 2 * n_off + i, f'=IF($B{row}=0,"",{oc}{row}/$B{row}-1)')
-        if row != nrfp_row:  # fewer extras isn't a better price
+        if ranked and row != nrfp_row:  # fewer extras isn't a better price
             s.cell(row, 3 + 3 * n_off, _xl_laagste_formula(namen, [f"{oc}{row}" for oc in off_letters]))
             for oc in off_letters:
                 s.conditional_formatting.add(f"{oc}{row}", lowest_rule(oc, row, off_letters))
@@ -1478,8 +1495,8 @@ def vergelijking_to_xlsx(v: OfferteVergelijking, gemaakt_op: str = "") -> bytes:
         "• IB (Budget): waar bekend het subtotaal van de bijbehorende Budget-regel (blauw, zie celopmerking); "
         "anders de som van de IB-regels op het tabblad Vergelijking.",
         "• Offertebedragen = Aantal × (Prijs materiaal + Arbeidskosten) per regel, alleen regels met een ingevuld aantal.",
-        "• Groen = laagste offerte. 'Alleen …' = de andere partij(en) hebben hier niets geoffreerd "
-        "(scope-verschil, geen prijsvoordeel).",
+        *(["• Groen = laagste offerte. 'Alleen …' = de andere partij(en) hebben hier niets geoffreerd "
+           "(scope-verschil, geen prijsvoordeel)."] if ranked else []),
         "• Een verschil hoeft geen fout te zijn: partijen kunnen een andere variant, eenheid of scope hebben gekozen — "
         "controleer de regels op het tabblad Vergelijking.",
     ]
