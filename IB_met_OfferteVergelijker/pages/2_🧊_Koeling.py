@@ -229,6 +229,22 @@ def _analyze_koel_installatie(ib_file, bid_files):
 _GROEP_TINTS = ["#DDEBF7", "#FCE4D6", "#E2EFDA", "#FFF2CC", "#EDE1F5"]
 
 
+def _verschil_label(diff, offerte_totaal, ib_totaal) -> str:
+    """'▲ € 1,234.56 (+5.3%)' / '▼ € 500.00 (-2.1%)' for an offerte − IB
+    difference, like the Samenvatting's Verschil KPI. No arrow when the
+    offerte didn't quote the line — the difference is then just −IB, not a
+    saving (the old prijs_arrow likewise only showed one when both prices
+    existed)."""
+    if diff is None or pd.isna(diff):
+        return ""
+    if abs(diff) < 0.005:
+        return "-"
+    if not offerte_totaal:
+        return f"€ {diff:,.2f}"
+    pct = f"  ({diff / ib_totaal * 100:+.1f}%)" if ib_totaal else ""
+    return f"{'▲' if diff > 0 else '▼'} € {abs(diff):,.2f}{pct}"
+
+
 def _show_alle_resultaten(v):
     ranked = len(v.namen) > 1
     cat = st.selectbox("Categorie", ["Alle categorieën", *v.categorieen], key="koel_inst_alle_cat")
@@ -267,9 +283,17 @@ def _show_alle_resultaten(v):
             styles.append(css)
         return styles
 
+    # ▲/▼ per line needs the row's own totals, which a Styler.format callable
+    # can't see — so the '− IB' columns become display strings up front.
+    for n in v.namen:
+        rdf[f"{n} − IB"] = [
+            _verschil_label(d, o, ib)
+            for d, o, ib in zip(rdf[f"{n} − IB"], rdf[f"{n} Totaal"], rdf["IB Totaal"], strict=True)
+        ]
+
     money = lambda x: "" if x is None or pd.isna(x) else ("-" if x == 0 else f"€ {x:,.2f}")
     num = lambda x: "" if x is None or pd.isna(x) else f"{x:g}"
-    money_cols = ["IB Prijs p.e.", "IB Totaal", *[f"{n} {k}" for n in v.namen for k in ("Prijs p.e.", "Totaal", "− IB")]]
+    money_cols = ["IB Prijs p.e.", "IB Totaal", *[f"{n} {k}" for n in v.namen for k in ("Prijs p.e.", "Totaal")]]
     num_cols = ["IB Aantal", *[f"{n} Aantal" for n in v.namen]]
     st.dataframe(
         rdf.style.apply(_row_style, axis=1).format({**{c: money for c in money_cols}, **{c: num for c in num_cols}}),
