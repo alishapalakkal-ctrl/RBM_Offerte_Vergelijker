@@ -96,6 +96,7 @@ def _analyze_aannemer(ib_file, offerte_file):
     st.session_state.aannemer_df = df
     st.session_state.aannemer_vergelijking = build_aannemer_vergelijking(
         offerte, matches, categorie_totalen, naam=leverancier, bestand=offerte_file.name,
+        bdf=bdf, categorie_mapping=categorie_mapping,
     )
     st.session_state.aannemer_categorie_totalen = categorie_totalen
     st.session_state.aannemer_totaal_ib_row = totaal_ib_row

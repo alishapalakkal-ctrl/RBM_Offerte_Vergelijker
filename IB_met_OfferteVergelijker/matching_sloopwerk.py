@@ -25,11 +25,11 @@ import pdfplumber
 from matching_koeling import (
     HAS_RAPIDFUZZ,
     _budget_code_totals,
-    _budget_prijs_totaal,
-    _budget_row,
     _nh,
     _norm_text,
     _pdf_cell,
+    budget_ib_only_rows,
+    budget_leaf_rows,
     build_categorie_totalen,
     load_budget_df,
 )
@@ -39,6 +39,7 @@ from vergelijking import (
     categorieen_in_volgorde,
     leverancier_uit_rijen,
     match_opmerking,
+    met_ib_only_regels,
 )
 
 if HAS_RAPIDFUZZ:
@@ -316,24 +317,12 @@ def match_sloopwerk_budget(
         for code, _omschrijving in entries:
             code_to_categorie[code] = categorie
 
-    candidates = []
-    for r in range(row_start, row_end + 1):
-        result = _budget_row(bdf, r)
-        if result is None:
-            continue
-        desc, aantal, row = result
-        code = row.iloc[6] if len(row) > 6 else None
-        # Leaf item rows are 4-dot outline codes (e.g. 'A.01.01.02');
-        # group-header/subtotal rows ('A.01.01', 'A.01') have no individual
-        # item to join against.
-        if not isinstance(code, str) or code.count(".") != 3:
-            continue
-        prijs, totaal = _budget_prijs_totaal(row)
-        prefix = ".".join(code.split(".")[:3])
-        candidates.append({
-            "row": r, "desc": desc, "aantal": aantal, "prijs": prijs, "totaal": totaal,
-            "code": code, "categorie": code_to_categorie.get(prefix),
-        })
+    # Only leaf item rows ('A.01.01.02'), each tagged with the offerte Groep
+    # its subtotal ('A.01.01') maps to.
+    candidates = [
+        {**c, "categorie": code_to_categorie.get(".".join(c["code"].split(".")[:3]))}
+        for c in budget_leaf_rows(bdf, row_start, row_end)
+    ]
 
     used_budget = set()
     matches: Dict[int, BudgetMatch] = {}
@@ -431,30 +420,36 @@ def build_sloopwerk_df(offerte: List[OfferteItem], matches: Dict[int, BudgetMatc
 def build_sloopwerk_vergelijking(
     offerte: List[OfferteItem], matches: Dict[int, BudgetMatch],
     categorie_totalen: Optional[Dict[str, float]] = None, naam: str = "Van de Laar", bestand: str = "",
+    bdf: Optional[pd.DataFrame] = None, categorie_mapping: Optional[Dict[str, List[tuple]]] = None,
+    row_start: int = BUDGET_SLOOPWERK_VANDELAAR_ROW_START, row_end: int = BUDGET_SLOOPWERK_VANDELAAR_ROW_END,
 ) -> OfferteVergelijking:
     """The offerte next to the IB per line, for the shared 'Alle resultaten'
     layout (common.show_alle_resultaten) — lines with an aantal, NRFP left
-    out. The offerte only has a line total ('Waarde offerte Totaal'), so its
-    prijs p.e. is totaal / aantal; IB totaal is the Budget row's own Totaal
-    (IB prijs × offerte aantal when it has none), as in build_sloopwerk_df."""
-    regels = []
+    out (the Samenvatting shows it separately). The offerte only has a line total ('Waarde offerte Totaal'), so its prijs p.e. is totaal / aantal. IB totaal is the
+    matched Budget row's own Totaal (0 when that row has none).
+
+    With `bdf`, the Budget rows no shown line covers are added as IB-only
+    lines (matching_koeling.budget_ib_only_rows, filed under their offerte
+    categorie via `categorie_mapping`), so the IB Totaal adds up to the
+    Samenvatting's Totaal IB."""
+    regels, used = [], set()
     for i, o in enumerate(offerte):
         if o.groep == "NRFP" or not o.aantal:
             continue
         m = matches.get(i)
-        if m and m.totaal is not None:
-            ib_totaal = m.totaal
-        elif m and m.prijs is not None:
-            ib_totaal = m.prijs * o.aantal
-        else:
-            ib_totaal = None
+        if m:
+            used.add(m.budget_row)
         regels.append(VergelijkingRegel(
             categorie=o.groep, art_nr_jumbo=o.art_nr_jumbo, omschrijving=o.omschrijving,
             ib_omschrijving=m.omschrijving if m else None, eenheid=o.eenheid,
-            ib_aantal=m.aantal if m else None, ib_prijs=m.prijs if m else None, ib_totaal_budget=ib_totaal,
-            offertes=[(o.aantal, o.totaal / o.aantal if o.totaal is not None else None)],
-            opmerking=match_opmerking(m),
+            ib_aantal=m.aantal if m else None, ib_prijs=m.prijs if m else None,
+            ib_totaal_budget=(m.totaal or 0.0) if m else None,
+            offertes=[(o.aantal, o.totaal / o.aantal if o.totaal is not None else None)], opmerking=match_opmerking(m),
         ))
+    if bdf is not None:
+        code_naar_categorie = {code: cat for cat, entries in (categorie_mapping or {}).items() for code, _ in entries}
+        ib_only = budget_ib_only_rows(bdf, row_start, row_end, "A.01.", used)
+        regels = met_ib_only_regels(regels, ib_only, code_naar_categorie)
     return OfferteVergelijking(
         namen=[naam], bestanden=[bestand], regels=regels, nrfp=[[]],
         categorieen=categorieen_in_volgorde(regels), ib_categorie_totalen=dict(categorie_totalen or {}),

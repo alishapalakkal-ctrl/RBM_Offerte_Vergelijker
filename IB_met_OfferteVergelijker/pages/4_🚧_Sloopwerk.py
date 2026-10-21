@@ -93,6 +93,7 @@ def _analyze_sloopwerk(ib_file, offerte_file):
     st.session_state.sloopwerk_df = df
     st.session_state.sloopwerk_vergelijking = build_sloopwerk_vergelijking(
         offerte, matches, categorie_totalen, naam=leverancier, bestand=offerte_file.name,
+        bdf=bdf, categorie_mapping=categorie_mapping,
     )
     st.session_state.sloopwerk_categorie_totalen = categorie_totalen
     st.session_state.sloopwerk_totaal_ib_row = totaal_ib_row

@@ -234,7 +234,7 @@ def test_build_aannemer_vergelijking_uses_budget_totaal_and_skips_nrfp():
     kozijn, wand, los = v.regels
     assert kozijn.offertes == [(2, 100.0)] and kozijn.offerte_totaal(0) == 200.0
     assert kozijn.ib_totaal == 180.0 and kozijn.opmerking == ""
-    assert wand.ib_totaal == 55.0 * 4               # no Budget Totaal -> IB prijs × offerte aantal
+    assert wand.ib_totaal == 0.0                    # Budget row has no Totaal -> 0, like the Budget itself
     assert wand.opmerking == "fuzzy match 81%"
     assert los.ib_totaal == 0 and los.opmerking == "geen IB-match"
     assert v.ib_categorie_totalen == {"Pos 1 Kozijnen en deuren": 999.0}
@@ -290,3 +290,28 @@ def test_read_offerte_excel_returns_leverancier():
     items, leverancier = read_offerte(_offerte_workbook(), "Offerte Afbouw FvdL.xlsx")
     assert leverancier == "Van de Laar"
     assert len(items) == 2
+
+
+def test_build_aannemer_vergelijking_adds_ib_only_lines_up_to_section_total():
+    # A.02.04 Kozijnen: the offerte quotes one leaf, IB also budgets another type;
+    # A.02.11 Reiskosten: a lump sum without leaf rows.
+    bdf = _budget_df({
+        1: ("A.02.04", "Kozijnen, ramen en deuren", None, None, 300.0),
+        2: ("A.02.04.01", "Houten binnendeurkozijn", 2, 90.0, 180.0),
+        3: ("A.02.04.02", "Stalen kozijn (door IB gekozen)", 1, 120.0, 120.0),
+        4: ("A.02.11", "Reiskosten", None, None, 500.0),
+    })
+    offerte = [_offerte_item(row=1, prijs_pe=100.0, aantal=2)]
+    matches = {0: BudgetMatch(budget_row=2, code="A.02.04.01", omschrijving="Houten binnendeurkozijn", aantal=2,
+                              prijs=90.0, totaal=180.0, score=100.0, source="handmatig")}
+
+    v = build_aannemer_vergelijking(offerte, matches, bdf=bdf, row_start=1, row_end=4,
+                                    categorie_mapping={"Pos 1 Kozijnen en deuren": [("A.02.04", "Kozijnen")]})
+
+    assert [(r.categorie, r.omschrijving, r.ib_omschrijving, r.ib_totaal) for r in v.regels] == [
+        ("Pos 1 Kozijnen en deuren", offerte[0].omschrijving, "Houten binnendeurkozijn", 180.0),
+        ("Pos 1 Kozijnen en deuren", None, "Stalen kozijn (door IB gekozen)", 120.0),   # filed under the offerte Pos
+        ("Reiskosten", None, "Reiskosten", 500.0),                                     # subtotal without leaf rows
+    ]
+    assert v.regels[1].offertes == [(None, None)] and "alleen in IB" in v.regels[1].opmerking
+    assert sum(r.ib_totaal for r in v.regels) == 800.0   # == Σ subtotals, the Samenvatting's Totaal IB

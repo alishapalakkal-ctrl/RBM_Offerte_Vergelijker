@@ -498,6 +498,55 @@ def _budget_code_totals(bdf: pd.DataFrame, row_start: int, row_end: int) -> Dict
     return totals
 
 
+def budget_leaf_rows(bdf: pd.DataFrame, row_start: int, row_end: int) -> List[dict]:
+    """Budget leaf item rows in a range — 3-dot outline codes (e.g.
+    'A.02.04.01'); group-header/subtotal rows ('A.02.04', 'A.02') have no
+    individual item and are left out. Each as {row, code, desc, aantal,
+    prijs, totaal}. The candidate pool for Aannemer/Sloopwerk matching."""
+    rows = []
+    for r in range(row_start, row_end + 1):
+        result = _budget_row(bdf, r)
+        if result is None:
+            continue
+        desc, aantal, row = result
+        code = row.iloc[6] if len(row) > 6 else None
+        if not isinstance(code, str) or code.count(".") != 3:
+            continue
+        prijs, totaal = _budget_prijs_totaal(row)
+        rows.append({"row": r, "code": code.strip(), "desc": desc, "aantal": aantal, "prijs": prijs, "totaal": totaal})
+    return rows
+
+
+def budget_ib_only_rows(
+    bdf: Optional[pd.DataFrame], row_start: int, row_end: int, section_prefix: str, used_rows: set,
+) -> List[dict]:
+    """The IB side that no shown offerte line covers, so a per-line view adds
+    up to the section's IB total (the sum of its 2-dot subtotals, as in
+    get_aannemer_totaal_ib / get_sloopwerk_totaal_ib):
+
+    - every leaf row with a Totaal that isn't in `used_rows` (e.g. the
+      faywand type IB chose where the offerte quoted another), and
+    - per subtotal, whatever its own Totaal holds beyond its leaf rows
+      (e.g. 'Reiskosten', budgeted as a lump sum without item rows) —
+      row None, desc = the subtotal's description.
+
+    Each as {row, code, desc, aantal, prijs, totaal, subcode, subdesc}."""
+    if bdf is None:
+        return []
+    subs = {c: (d, t or 0.0) for c, (d, _a, t) in _budget_code_totals(bdf, row_start, row_end).items()
+            if c.startswith(section_prefix) and c.count(".") == 2}
+    leaf = [r for r in budget_leaf_rows(bdf, row_start, row_end) if r["code"].startswith(section_prefix)]
+    out = []
+    for sub, (subdesc, subtotaal) in subs.items():
+        children = [r for r in leaf if r["code"].startswith(sub + ".")]
+        for r in children:
+            if r["totaal"] and r["row"] not in used_rows:
+                out.append({**r, "subcode": sub, "subdesc": subdesc})
+        rest = subtotaal - sum(r["totaal"] or 0.0 for r in children)
+        if abs(rest) > 0.005:
+            out.append({"row": None, "code": sub, "desc": subdesc, "aantal": None, "prijs": None,
+                        "totaal": rest, "subcode": sub, "subdesc": subdesc})
+    return out
 
 
 def _find_alt_budget_row(

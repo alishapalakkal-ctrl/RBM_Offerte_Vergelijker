@@ -24,7 +24,8 @@ class VergelijkingRegel:
     when that offerte doesn't have the line at all."""
     categorie: Optional[str]
     art_nr_jumbo: Optional[str]
-    omschrijving: str
+    #: the offerte's omschrijving — None for an IB-only line (see met_ib_only_regels)
+    omschrijving: Optional[str]
     ib_omschrijving: Optional[str]
     eenheid: Optional[str]
     ib_aantal: Optional[float]
@@ -68,6 +69,33 @@ def categorieen_in_volgorde(regels: List[VergelijkingRegel]) -> List[str]:
         if r.categorie not in out:
             out.append(r.categorie)
     return out
+
+
+def met_ib_only_regels(
+    regels: List[VergelijkingRegel], ib_only: List[dict], code_naar_categorie: Dict[str, str], n_offertes: int = 1,
+) -> List[VergelijkingRegel]:
+    """`regels` plus a line per IB-only Budget row (matching_koeling.
+    budget_ib_only_rows) — IB items no offerte line covers, e.g. a faywand
+    type IB chose where the offerte quoted another, so the IB Totaal of the
+    per-line view adds up to the Samenvatting's Totaal IB. Such a line has
+    no offerte side (omschrijving None) and is filed under the offerte
+    categorie of its Budget subtotal (via `code_naar_categorie`), else the
+    subtotal's own description (e.g. 'Reiskosten'). Ordered by categorie —
+    the offerte's categories first, each with its offerte lines before its
+    IB-only lines."""
+    extra = []
+    for b in ib_only:
+        categorie = code_naar_categorie.get(b["subcode"]) or b["subdesc"] or b["subcode"]
+        extra.append(VergelijkingRegel(
+            categorie=categorie, art_nr_jumbo=None, omschrijving=None, ib_omschrijving=b["desc"], eenheid=None,
+            ib_aantal=b["aantal"], ib_prijs=b["prijs"], offertes=[(None, None)] * n_offertes,
+            opmerking="alleen in IB (niet geoffreerd)" if b["row"] is not None
+            else "alleen in IB — subtotaal zonder losse regels",
+            ib_totaal_budget=b["totaal"],
+        ))
+    volgorde = categorieen_in_volgorde(regels + extra)
+    alles = regels + extra  # stable sort keeps offerte lines before IB-only ones per categorie
+    return sorted(alles, key=lambda r: volgorde.index(r.categorie))
 
 
 def leverancier_uit_rijen(rows, max_rij: int = 40) -> Optional[str]:
