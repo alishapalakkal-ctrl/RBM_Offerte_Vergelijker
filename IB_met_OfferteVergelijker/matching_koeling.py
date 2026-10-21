@@ -13,6 +13,13 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from vergelijking import (
+    OfferteVergelijking,
+    VergelijkingRegel,
+    categorieen_in_volgorde,
+    laagste_offerte,
+)
+
 try:
     from rapidfuzz import fuzz
     HAS_RAPIDFUZZ = True
@@ -1080,46 +1087,6 @@ def bidsheet_leverancier(file_bytes: bytes, filename: str) -> str:
     return guess_leverancier(filename)
 
 
-@dataclass
-class VergelijkingRegel:
-    """One line of the side-by-side comparison: an IB article (or, without
-    an IB match, an offerte omschrijving) with each offerte's aantal and
-    prijs p.e. — `offertes[i]` is (aantal, prijs) for offerte i, (None, None)
-    when that offerte doesn't have the line at all."""
-    categorie: Optional[str]
-    art_nr_jumbo: Optional[str]
-    omschrijving: str
-    ib_omschrijving: Optional[str]
-    eenheid: Optional[str]
-    ib_aantal: Optional[float]
-    ib_prijs: Optional[float]
-    offertes: List[tuple]
-    opmerking: str = ""
-
-    @property
-    def ib_totaal(self) -> float:
-        return (self.ib_aantal or 0) * (self.ib_prijs or 0)
-
-    def offerte_totaal(self, i: int) -> float:
-        aantal, prijs = self.offertes[i]
-        return (aantal or 0) * (prijs or 0)
-
-
-@dataclass
-class OfferteVergelijking:
-    namen: List[str]
-    bestanden: List[str]
-    regels: List[VergelijkingRegel]
-    nrfp: List[List[NrfpItem]]
-    #: grouped Categorie labels in offerte order
-    categorieen: List[str]
-    #: grouped Categorie -> Budget subheading Totaal, only where every member
-    #: categorie has a Budget code (see build_categorie_totalen)
-    ib_categorie_totalen: Dict[str, float]
-    ib_categorie_codes: Dict[str, str]
-    ib_bestand: str = ""
-
-
 def _is_num(v) -> bool:
     return isinstance(v, (int, float)) and not pd.isna(v)
 
@@ -1222,10 +1189,7 @@ def build_offerte_vergelijking(
 
     # Keep bidsheet order: categories as they first appear, lines by row.
     ranked = sorted(zip(order, regels, strict=True), key=lambda x: x[0])
-    categorieen: List[str] = []
-    for _, regel in ranked:
-        if regel.categorie not in categorieen:
-            categorieen.append(regel.categorie)
+    categorieen = categorieen_in_volgorde([regel for _, regel in ranked])
     ranked.sort(key=lambda x: (categorieen.index(x[1].categorie), x[0]))
 
     ib_tot, ib_codes = {}, {}
@@ -1240,14 +1204,6 @@ def build_offerte_vergelijking(
         nrfp=[o[4] for o in offertes], categorieen=categorieen,
         ib_categorie_totalen=ib_tot, ib_categorie_codes=ib_codes, ib_bestand=ib_bestand,
     )
-
-
-def _laagste(namen: List[str], totalen: List[float]) -> str:
-    quoted = [(t, n) for t, n in zip(totalen, namen, strict=True) if t > 0]
-    if not quoted:
-        return ""
-    best = min(quoted, key=lambda x: x[0])[1]
-    return f"Alleen {best}" if len(quoted) == 1 else best
 
 
 def vergelijking_samenvatting(v: OfferteVergelijking) -> pd.DataFrame:
@@ -1273,53 +1229,8 @@ def vergelijking_samenvatting(v: OfferteVergelijking) -> pd.DataFrame:
         rec.update({n: t for n, t in zip(v.namen, offs, strict=True)})
         rec.update({f"{n} − IB": t - ib for n, t in zip(v.namen, offs, strict=True)})
         if len(v.namen) > 1:  # with one offerte it would read 'Alleen X' everywhere
-            rec["Laagste"] = _laagste(v.namen, offs) if with_laagste else ""
+            rec["Laagste"] = laagste_offerte(v.namen, offs) if with_laagste else ""
         out.append(rec)
-    return pd.DataFrame(out)
-
-
-def unique_namen(namen: List[str]) -> List[str]:
-    """Make offerte names unique for use as column headers — a second
-    'Frimex' (e.g. a revised offerte) becomes 'Frimex (2)'."""
-    out: List[str] = []
-    for n in namen:
-        naam, k = n, 2
-        while naam in out:
-            naam, k = f"{n} ({k})", k + 1
-        out.append(naam)
-    return out
-
-
-def vergelijking_regels_df(v: OfferteVergelijking, totaal_rij: bool = True) -> pd.DataFrame:
-    """Per-line table laid out like vergelijking_to_xlsx's Vergelijking sheet:
-    IB aantal/prijs/totaal, then per offerte aantal/prijs/totaal/verschil
-    t.o.v. IB, then the lowest offerte (only with 2+ offertes) and the
-    match notes — plus a closing 'Totaal' row like the Excel's."""
-    ranked = len(v.namen) > 1
-    out = []
-    for r in v.regels:
-        rec = {"Categorie": r.categorie, "Art.Nr.Jumbo": r.art_nr_jumbo, "Omschrijving (offerte)": r.omschrijving,
-               "IB omschrijving (Budget)": r.ib_omschrijving, "Eenheid": r.eenheid,
-               "IB Aantal": r.ib_aantal, "IB Prijs p.e.": r.ib_prijs, "IB Totaal": r.ib_totaal}
-        totalen = [r.offerte_totaal(i) for i in range(len(v.namen))]
-        for i, n in enumerate(v.namen):
-            aantal, prijs = r.offertes[i]
-            rec[f"{n} Aantal"] = aantal
-            rec[f"{n} Prijs p.e."] = prijs
-            rec[f"{n} Totaal"] = totalen[i]
-            rec[f"{n} − IB"] = totalen[i] - r.ib_totaal
-        if ranked:
-            rec["Laagste offerte"] = _laagste(v.namen, totalen)
-        rec["Opmerking"] = r.opmerking
-        out.append(rec)
-    if totaal_rij and out:
-        tot = {c: None for c in out[0]}
-        tot["Categorie"] = "Totaal"
-        for c in ["IB Totaal", *[f"{n} {k}" for n in v.namen for k in ("Totaal", "− IB")]]:
-            tot[c] = sum(rec[c] for rec in out)
-        if ranked:
-            tot["Laagste offerte"] = _laagste(v.namen, [tot[f"{n} Totaal"] for n in v.namen])
-        out.append(tot)
     return pd.DataFrame(out)
 
 

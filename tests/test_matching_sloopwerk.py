@@ -9,6 +9,7 @@ from matching_sloopwerk import (
     BudgetMatch,
     OfferteItem,
     build_sloopwerk_df,
+    build_sloopwerk_vergelijking,
     get_sloopwerk_totaal_ib,
     match_sloopwerk_budget,
     read_offerte,
@@ -178,3 +179,25 @@ def test_build_sloopwerk_df_none_match_is_unmatched():
 
     assert df.loc[0, "_status"] == "unmatched"
     assert df.loc[0, "IB omschrijving"] is None
+
+
+# ─── shared 'Alle resultaten' comparison ─────────────────────────────────────
+
+def test_build_sloopwerk_vergelijking_derives_prijs_from_totaal():
+    offerte = [
+        _offerte_item(row=1, totaal=150.0, aantal=3),
+        _offerte_item(row=2, groep="Vergunningen", omschrijving="Sloopmelding", totaal=None, aantal=1),
+        _offerte_item(row=3, groep="NRFP", totaal=50.0, aantal=1),
+    ]
+    matches = {0: BudgetMatch(budget_row=19, code="A.01.01.01", omschrijving="KLIC", aantal=3, prijs=40.0,
+                              totaal=120.0, score=88.0, source="fuzzy")}
+
+    v = build_sloopwerk_vergelijking(offerte, matches)
+
+    assert v.namen == ["Van de Laar"]
+    assert v.categorieen == ["Algemeen", "Vergunningen"]
+    klic, melding = v.regels
+    assert klic.offertes == [(3, 50.0)] and klic.offerte_totaal(0) == pytest.approx(150.0)
+    assert klic.ib_totaal == 120.0 and klic.opmerking == "fuzzy match 88%"
+    assert melding.offertes == [(1, None)] and melding.offerte_totaal(0) == 0
+    assert melding.opmerking == "geen IB-match"

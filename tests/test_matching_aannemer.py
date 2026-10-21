@@ -7,6 +7,7 @@ from matching_aannemer import (
     OfferteItem,
     _dutch_number,
     build_aannemer_df,
+    build_aannemer_vergelijking,
     get_aannemer_totaal_ib,
     match_aannemer_budget,
 )
@@ -201,3 +202,34 @@ def test_build_aannemer_df_none_match_is_unmatched():
 
     assert df.loc[0, "_status"] == "unmatched"
     assert df.loc[0, "IB omschrijving"] is None
+
+
+# ─── shared 'Alle resultaten' comparison ─────────────────────────────────────
+
+def test_build_aannemer_vergelijking_uses_budget_totaal_and_skips_nrfp():
+    offerte = [
+        _offerte_item(row=1, prijs_pe=100.0, aantal=2),             # handmatig, Budget Totaal 180
+        _offerte_item(row=2, pos="Pos 2 Wanden", omschrijving="Wand", prijs_pe=50.0, aantal=4),  # fuzzy
+        _offerte_item(row=3, prijs_pe=10.0, aantal=1),              # unmatched
+        _offerte_item(row=4, aantal=None),                          # no aantal -> left out
+        _offerte_item(row=5, pos="NRFP", aantal=1),                 # NRFP -> left out
+    ]
+    matches = {
+        0: BudgetMatch(budget_row=299, code="A.02.04.01", omschrijving="Kozijn", aantal=2, prijs=90.0,
+                       totaal=180.0, score=100.0, source="handmatig"),
+        1: BudgetMatch(budget_row=310, code="A.02.05.01", omschrijving="Wand IB", aantal=4, prijs=55.0,
+                       totaal=None, score=81.0, source="fuzzy"),
+    }
+
+    v = build_aannemer_vergelijking(offerte, matches, {"Pos 1 Kozijnen en deuren": 999.0}, bestand="offerte.pdf")
+
+    assert v.namen == ["Van Wijnen"] and v.bestanden == ["offerte.pdf"]
+    assert v.categorieen == ["Pos 1 Kozijnen en deuren", "Pos 2 Wanden"]
+    assert [r.omschrijving for r in v.regels] == [offerte[0].omschrijving, "Wand", offerte[2].omschrijving]
+    kozijn, wand, los = v.regels
+    assert kozijn.offertes == [(2, 100.0)] and kozijn.offerte_totaal(0) == 200.0
+    assert kozijn.ib_totaal == 180.0 and kozijn.opmerking == ""
+    assert wand.ib_totaal == 55.0 * 4               # no Budget Totaal -> IB prijs × offerte aantal
+    assert wand.opmerking == "fuzzy match 81%"
+    assert los.ib_totaal == 0 and los.opmerking == "geen IB-match"
+    assert v.ib_categorie_totalen == {"Pos 1 Kozijnen en deuren": 999.0}

@@ -30,6 +30,7 @@ from matching_koeling import (
     build_categorie_totalen,
     load_budget_df,
 )
+from vergelijking import OfferteVergelijking, VergelijkingRegel, categorieen_in_volgorde, match_opmerking
 
 if HAS_RAPIDFUZZ:
     from rapidfuzz import fuzz
@@ -43,6 +44,7 @@ __all__ = [
     "OfferteItem",
     "build_categorie_totalen",
     "build_sloopwerk_df",
+    "build_sloopwerk_vergelijking",
     "get_sloopwerk_totaal_ib",
     "load_budget_df",
     "load_categorie_budget_codes",
@@ -323,3 +325,36 @@ def build_sloopwerk_df(offerte: List[OfferteItem], matches: Dict[int, BudgetMatc
             "Totaal verschil (%)": totaal_diff_pct,
         })
     return pd.DataFrame(rows)
+
+
+def build_sloopwerk_vergelijking(
+    offerte: List[OfferteItem], matches: Dict[int, BudgetMatch],
+    categorie_totalen: Optional[Dict[str, float]] = None, naam: str = "Van de Laar", bestand: str = "",
+) -> OfferteVergelijking:
+    """The offerte next to the IB per line, for the shared 'Alle resultaten'
+    layout (common.show_alle_resultaten) — lines with an aantal, NRFP left
+    out. The offerte only has a line total ('Waarde offerte Totaal'), so its
+    prijs p.e. is totaal / aantal; IB totaal is the Budget row's own Totaal
+    (IB prijs × offerte aantal when it has none), as in build_sloopwerk_df."""
+    regels = []
+    for i, o in enumerate(offerte):
+        if o.groep == "NRFP" or not o.aantal:
+            continue
+        m = matches.get(i)
+        if m and m.totaal is not None:
+            ib_totaal = m.totaal
+        elif m and m.prijs is not None:
+            ib_totaal = m.prijs * o.aantal
+        else:
+            ib_totaal = None
+        regels.append(VergelijkingRegel(
+            categorie=o.groep, art_nr_jumbo=o.art_nr_jumbo, omschrijving=o.omschrijving,
+            ib_omschrijving=m.omschrijving if m else None, eenheid=o.eenheid,
+            ib_aantal=m.aantal if m else None, ib_prijs=m.prijs if m else None, ib_totaal_budget=ib_totaal,
+            offertes=[(o.aantal, o.totaal / o.aantal if o.totaal is not None else None)],
+            opmerking=match_opmerking(m),
+        ))
+    return OfferteVergelijking(
+        namen=[naam], bestanden=[bestand], regels=regels, nrfp=[[]],
+        categorieen=categorieen_in_volgorde(regels), ib_categorie_totalen=dict(categorie_totalen or {}),
+    )

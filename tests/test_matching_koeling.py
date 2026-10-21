@@ -30,11 +30,10 @@ from matching_koeling import (
     parse_buiten_rfp,
     parse_ib,
     parse_offerte,
-    unique_namen,
-    vergelijking_regels_df,
     vergelijking_samenvatting,
     vergelijking_to_xlsx,
 )
+from vergelijking import unique_namen, vergelijking_regels_df
 
 
 def _xlsx_bytes(sheet_name: str, rows: list) -> bytes:

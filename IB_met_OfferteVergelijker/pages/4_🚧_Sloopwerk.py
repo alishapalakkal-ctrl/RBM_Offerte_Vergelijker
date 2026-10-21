@@ -12,13 +12,21 @@ per Groep/categorie — see matching_sloopwerk.py for the details.
 import pandas as pd
 import streamlit as st
 
-from common import SLOOPWERK_ICON, back_to_overview, configure_page, inject_base_style, jumbo_header
+from common import (
+    SLOOPWERK_ICON,
+    back_to_overview,
+    configure_page,
+    inject_base_style,
+    jumbo_header,
+    show_alle_resultaten,
+)
 from matching_sloopwerk import (
     BUDGET_SLOOPWERK_VANDELAAR_ROW_END,
     BUDGET_SLOOPWERK_VANDELAAR_ROW_START,
     HAS_RAPIDFUZZ,
     build_categorie_totalen,
     build_sloopwerk_df,
+    build_sloopwerk_vergelijking,
     get_sloopwerk_totaal_ib,
     load_budget_df,
     load_categorie_budget_codes,
@@ -82,12 +90,15 @@ def _analyze_sloopwerk(ib_file, offerte_file):
         totaal_ib_row = get_sloopwerk_totaal_ib(bdf)
 
     st.session_state.sloopwerk_df = df
+    st.session_state.sloopwerk_vergelijking = build_sloopwerk_vergelijking(
+        offerte, matches, categorie_totalen, bestand=offerte_file.name,
+    )
     st.session_state.sloopwerk_categorie_totalen = categorie_totalen
     st.session_state.sloopwerk_totaal_ib_row = totaal_ib_row
     st.rerun()
 
 
-def _show_sloopwerk_results(df: pd.DataFrame, categorie_totalen=None, totaal_ib_row=None):
+def _show_sloopwerk_results(df: pd.DataFrame, categorie_totalen=None, totaal_ib_row=None, vergelijking=None):
     categorie_totalen = categorie_totalen or {}
     df = df[df["Offerte Aantal"].notna()].reset_index(drop=True)
     nrfp_df = df[df["Groep"] == "NRFP"]
@@ -171,11 +182,10 @@ def _show_sloopwerk_results(df: pd.DataFrame, categorie_totalen=None, totaal_ib_
         )
 
     with tab_all:
-        st.caption(
-            f"{total} offerte-regels — rood = geen IB-match, geel = aantalverschil > 10%, "
-            "▲/▼ in Totaal verschil = prijsafwijking"
-        )
-        st.dataframe(_style_sloopwerk(df), use_container_width=True, height=600)
+        if vergelijking is None:  # results from before this layout existed
+            st.info("Klik opnieuw op **Analyseren** om deze weergave te zien.")
+        else:
+            show_alle_resultaten(vergelijking, key="sloopwerk")
 
     with tab_fuzzy:
         fdf = df[df["Match"] == "fuzzy"].reset_index(drop=True)
@@ -231,4 +241,5 @@ else:
         st.session_state.sloopwerk_df,
         st.session_state.sloopwerk_categorie_totalen,
         st.session_state.sloopwerk_totaal_ib_row,
+        st.session_state.get("sloopwerk_vergelijking"),
     )

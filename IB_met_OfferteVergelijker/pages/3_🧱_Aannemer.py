@@ -14,12 +14,20 @@ matching_aannemer.py for the details.
 import pandas as pd
 import streamlit as st
 
-from common import AANNEMER_ICON, back_to_overview, configure_page, inject_base_style, jumbo_header
+from common import (
+    AANNEMER_ICON,
+    back_to_overview,
+    configure_page,
+    inject_base_style,
+    jumbo_header,
+    show_alle_resultaten,
+)
 from matching_aannemer import (
     BUDGET_AANNEMER_VANWIJNEN_ROW_END,
     BUDGET_AANNEMER_VANWIJNEN_ROW_START,
     HAS_RAPIDFUZZ,
     build_aannemer_df,
+    build_aannemer_vergelijking,
     build_categorie_totalen,
     get_aannemer_totaal_ib,
     load_art_nr_mapping,
@@ -86,12 +94,15 @@ def _analyze_aannemer(ib_file, pdf_file):
         totaal_ib_row = get_aannemer_totaal_ib(bdf)
 
     st.session_state.aannemer_df = df
+    st.session_state.aannemer_vergelijking = build_aannemer_vergelijking(
+        offerte, matches, categorie_totalen, bestand=pdf_file.name,
+    )
     st.session_state.aannemer_categorie_totalen = categorie_totalen
     st.session_state.aannemer_totaal_ib_row = totaal_ib_row
     st.rerun()
 
 
-def _show_aannemer_results(df: pd.DataFrame, categorie_totalen=None, totaal_ib_row=None):
+def _show_aannemer_results(df: pd.DataFrame, categorie_totalen=None, totaal_ib_row=None, vergelijking=None):
     categorie_totalen = categorie_totalen or {}
     df = df[df["Offerte Aantal"].notna()].reset_index(drop=True)
     nrfp_df = df[df["Pos"] == "NRFP"]
@@ -204,11 +215,10 @@ def _show_aannemer_results(df: pd.DataFrame, categorie_totalen=None, totaal_ib_r
         st.dataframe(meth_df, use_container_width=True, hide_index=True)
 
     with tab_all:
-        st.caption(
-            f"{total} offerte-regels — rood = geen IB-match, geel = aantalverschil > 10%, "
-            "▲/▼ in Prijs verschil = prijsafwijking"
-        )
-        st.dataframe(_style_aannemer(df), use_container_width=True, height=600)
+        if vergelijking is None:  # results from before this layout existed
+            st.info("Klik opnieuw op **Analyseren** om deze weergave te zien.")
+        else:
+            show_alle_resultaten(vergelijking, key="aannemer")
 
     with tab_fuzzy:
         fdf = df[df["Match"] == "fuzzy"].reset_index(drop=True)
@@ -267,4 +277,5 @@ else:
         st.session_state.aannemer_df,
         st.session_state.aannemer_categorie_totalen,
         st.session_state.aannemer_totaal_ib_row,
+        st.session_state.get("aannemer_vergelijking"),
     )

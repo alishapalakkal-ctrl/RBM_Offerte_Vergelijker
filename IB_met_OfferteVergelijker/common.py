@@ -1,9 +1,13 @@
 """Shared page-config, styling and header helpers for the Offerte Vergelijker app."""
 
 import base64
+from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
+
+from vergelijking import OfferteVergelijking, vergelijking_regels_df
 
 ASSETS_DIR = Path(__file__).parent / "assets"
 LOGO_PATH = ASSETS_DIR / "jumbo_logo.png"
@@ -99,4 +103,84 @@ def card_caption(text: str, height: int = 40):
         f'<div style="min-height:{height}px; font-size:0.875rem; color:rgb(120,120,120); '
         f'line-height:1.3;">{text}</div>',
         unsafe_allow_html=True,
+    )
+
+
+#: Light column-group tints for 'Alle resultaten', as in the Excel export's
+#: Vergelijking sheet (IB grey, then one colour per offerte).
+_GROEP_TINTS = ["#DDEBF7", "#FCE4D6", "#E2EFDA", "#FFF2CC", "#EDE1F5"]
+
+
+def _verschil_label(diff, offerte_totaal, ib_totaal) -> str:
+    """'▲ € 1,234.56 (+5.3%)' / '▼ € 500.00 (-2.1%)' for an offerte − IB
+    difference, like the Samenvatting's Verschil KPI. No arrow when the
+    offerte didn't quote the line — the difference is then just −IB, not a
+    saving."""
+    if diff is None or pd.isna(diff):
+        return ""
+    if abs(diff) < 0.005:
+        return "-"
+    if not offerte_totaal:
+        return f"€ {diff:,.2f}"
+    pct = f"  ({diff / ib_totaal * 100:+.1f}%)" if ib_totaal else ""
+    return f"{'▲' if diff > 0 else '▼'} € {abs(diff):,.2f}{pct}"
+
+
+def show_alle_resultaten(v: OfferteVergelijking, key: str):
+    """Every page's '📋 Alle resultaten' tab: the offerte(s) next to the IB
+    per line, laid out like the Excel export's Vergelijking sheet — column
+    tints per party, ▲/▼ in the '− IB' columns, the lowest offerte in green
+    (2+ offertes), a Totaal row and a Categorie filter. `key` keeps the
+    filter's widget state separate per page."""
+    ranked = len(v.namen) > 1
+    cat = st.selectbox("Categorie", ["Alle categorieën", *v.categorieen], key=f"{key}_alle_cat")
+    if cat != "Alle categorieën":
+        v = replace(v, regels=[r for r in v.regels if r.categorie == cat])
+    rdf = vergelijking_regels_df(v)
+    st.caption(
+        f"{len(v.regels)} regels — het IB naast {'elke offerte' if ranked else 'de offerte'}, zelfde opbouw als "
+        "het tabblad Vergelijking in de Excel-export. ▲/▼ = offerte boven/onder het IB."
+        + (" Groen = laagste offerte op die regel." if ranked else "")
+    )
+    if rdf.empty:
+        return
+
+    groups = [["IB Aantal", "IB Prijs p.e.", "IB Totaal"]] + [
+        [f"{n} Aantal", f"{n} Prijs p.e.", f"{n} Totaal", f"{n} − IB"] for n in v.namen]
+    tint = {c: "#F2F2F2" for c in groups[0]}
+    for i, cols in enumerate(groups[1:]):
+        tint.update({c: _GROEP_TINTS[i % len(_GROEP_TINTS)] for c in cols})
+    tot_cols = [f"{n} Totaal" for n in v.namen]
+
+    def _row_style(row):
+        quoted = {c: row[c] for c in tot_cols if row[c] > 0}
+        best = min(quoted, key=quoted.get) if ranked and quoted else None
+        is_total = row["Categorie"] == "Totaal"
+        styles = []
+        for c in row.index:
+            css = ""
+            if c == best:
+                css = "background-color:#C6EFCE; color:#1F1F1F"
+            elif c in tint:
+                css = f"background-color:{tint[c]}; color:#1F1F1F"
+            if is_total:
+                css += "; font-weight:700"
+            styles.append(css)
+        return styles
+
+    # ▲/▼ per line needs the row's own totals, which a Styler.format callable
+    # can't see — so the '− IB' columns become display strings up front.
+    for n in v.namen:
+        rdf[f"{n} − IB"] = [
+            _verschil_label(d, o, ib)
+            for d, o, ib in zip(rdf[f"{n} − IB"], rdf[f"{n} Totaal"], rdf["IB Totaal"], strict=True)
+        ]
+
+    money = lambda x: "" if x is None or pd.isna(x) else ("-" if x == 0 else f"€ {x:,.2f}")
+    num = lambda x: "" if x is None or pd.isna(x) else f"{x:g}"
+    money_cols = ["IB Prijs p.e.", "IB Totaal", *[f"{n} {k}" for n in v.namen for k in ("Prijs p.e.", "Totaal")]]
+    num_cols = ["IB Aantal", *[f"{n} Aantal" for n in v.namen]]
+    st.dataframe(
+        rdf.style.apply(_row_style, axis=1).format({**{c: money for c in money_cols}, **{c: num for c in num_cols}}),
+        use_container_width=True, hide_index=True, height=600,
     )

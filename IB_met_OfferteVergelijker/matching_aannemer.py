@@ -30,6 +30,7 @@ from matching_koeling import (
     build_categorie_totalen,
     load_budget_df,
 )
+from vergelijking import OfferteVergelijking, VergelijkingRegel, categorieen_in_volgorde, match_opmerking
 
 if HAS_RAPIDFUZZ:
     from rapidfuzz import fuzz
@@ -41,6 +42,7 @@ __all__ = [
     "BudgetMatch",
     "OfferteItem",
     "build_aannemer_df",
+    "build_aannemer_vergelijking",
     "build_categorie_totalen",
     "get_aannemer_totaal_ib",
     "load_art_nr_mapping",
@@ -426,3 +428,35 @@ def build_aannemer_df(offerte: List[OfferteItem], matches: Dict[int, BudgetMatch
             "Prijs verschil (%)": prijs_diff_pct,
         })
     return pd.DataFrame(rows)
+
+
+def build_aannemer_vergelijking(
+    offerte: List[OfferteItem], matches: Dict[int, BudgetMatch],
+    categorie_totalen: Optional[Dict[str, float]] = None, naam: str = "Van Wijnen", bestand: str = "",
+) -> OfferteVergelijking:
+    """The offerte next to the IB per line, for the shared 'Alle resultaten'
+    layout (common.show_alle_resultaten) — lines with an aantal, NRFP left
+    out (the Samenvatting shows it separately). Same figures as
+    build_aannemer_df: the PDF's combined prijs p.e., and the Budget row's
+    own Totaal as IB totaal (IB prijs × offerte aantal when it has none)."""
+    regels = []
+    for i, o in enumerate(offerte):
+        if o.pos == "NRFP" or not o.aantal:
+            continue
+        m = matches.get(i)
+        if m and m.totaal is not None:
+            ib_totaal = m.totaal
+        elif m and m.prijs is not None:
+            ib_totaal = m.prijs * o.aantal
+        else:
+            ib_totaal = None
+        regels.append(VergelijkingRegel(
+            categorie=o.pos, art_nr_jumbo=o.art_nr_jumbo, omschrijving=o.omschrijving,
+            ib_omschrijving=m.omschrijving if m else None, eenheid=o.eenheid,
+            ib_aantal=m.aantal if m else None, ib_prijs=m.prijs if m else None, ib_totaal_budget=ib_totaal,
+            offertes=[(o.aantal, o.prijs_pe)], opmerking=match_opmerking(m),
+        ))
+    return OfferteVergelijking(
+        namen=[naam], bestanden=[bestand], regels=regels, nrfp=[[]],
+        categorieen=categorieen_in_volgorde(regels), ib_categorie_totalen=dict(categorie_totalen or {}),
+    )
